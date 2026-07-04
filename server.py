@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CCDC hardening tracker — receives agent reports, runs the LLM diagnosis,
+"""CCDC hardening tracker - receives agent reports, runs the LLM diagnosis,
 and shows team progress.
 
 Run:
@@ -36,6 +36,237 @@ logger = logging.getLogger("harden.server")
 
 app = FastAPI(title="CCDC Hardening Tracker")
 
+DASHBOARD_CSS = """
+:root {
+  color-scheme: light;
+  --bg: #f6f7f2;
+  --panel: #ffffff;
+  --panel-soft: #f9faf7;
+  --ink: #17211b;
+  --muted: #667066;
+  --line: #d9ded3;
+  --accent: #245b45;
+  --accent-strong: #174633;
+  --warn: #9a5b00;
+  --danger: #9f2f2f;
+  --ok-bg: #e7f3ec;
+  --warn-bg: #fff4db;
+  --danger-bg: #fbe7e5;
+  --info-bg: #e8f0f7;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 36px;
+}
+.topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+.eyebrow {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+h1 {
+  margin: 0;
+  font-size: clamp(30px, 5vw, 48px);
+  line-height: 1;
+  letter-spacing: 0;
+}
+.runtime {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.runtime span,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.metric {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px 16px;
+}
+.metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.metric strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 30px;
+  line-height: 1;
+}
+.table-panel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.table-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+  padding: 13px 16px;
+}
+.table-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+.table-heading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: middle;
+}
+th {
+  background: #fbfcf8;
+  color: #465047;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+tr:last-child td {
+  border-bottom: 0;
+}
+tbody tr:hover {
+  background: #fcf8ed;
+}
+.host strong {
+  display: block;
+  font-size: 15px;
+}
+.host span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.badge.ok {
+  border-color: #b7d8c5;
+  background: var(--ok-bg);
+  color: #1f6842;
+}
+.badge.pending {
+  border-color: #efd08d;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.badge.root {
+  border-color: #b9d5c6;
+  background: var(--ok-bg);
+  color: var(--accent-strong);
+}
+.badge.limited {
+  border-color: #edc7c1;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.button,
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 5px 10px;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.button:hover,
+button:hover {
+  border-color: var(--accent);
+}
+.empty {
+  padding: 34px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+@media (max-width: 760px) {
+  .shell {
+    width: min(100% - 20px, 1180px);
+    padding-top: 18px;
+  }
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .runtime {
+    justify-content: flex-start;
+  }
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+"""
+
 
 def safe(name: str) -> str:
     return "".join(c for c in (name or "unknown") if c.isalnum() or c in "-._") or "unknown"
@@ -57,6 +288,28 @@ def report_path(host):
 
 def analysis_path(host):
     return DATA_DIR / f"{safe(host)}.analysis.txt"
+
+
+def load_dashboard_reports():
+    reports = []
+    for f in sorted(DATA_DIR.glob("*.json")):
+        try:
+            payload = json.loads(f.read_text())
+        except Exception:
+            logger.warning("skipping unreadable report path=%s", f)
+            continue
+        host = payload.get("hostname") or f.stem
+        decoded = payload.get("_decoded", {})
+        reports.append({
+            "host": host,
+            "host_id": safe(host),
+            "collected_as": payload.get("collected_as", "?"),
+            "received": payload.get("_received", "?"),
+            "timestamp": payload.get("timestamp", "?"),
+            "sections": len(decoded),
+            "analyzed": analysis_path(host).exists(),
+        })
+    return sorted(reports, key=lambda item: item["received"], reverse=True)
 
 
 @app.on_event("startup")
@@ -149,31 +402,94 @@ def get_report(host: str):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
+    reports = load_dashboard_reports()
+    total = len(reports)
+    analyzed_count = sum(1 for report in reports if report["analyzed"])
+    root_count = sum(1 for report in reports if report["collected_as"] == "root")
+    pending_count = total - analyzed_count
+    provider = select_provider()
+
     rows = []
-    for f in sorted(DATA_DIR.glob("*.json")):
-        try:
-            p = json.loads(f.read_text())
-        except Exception:
-            continue
-        host = html.escape(p.get("hostname", "?"))
-        who = html.escape(p.get("collected_as", "?"))
-        recv = html.escape(p.get("_received", "?"))
-        analyzed = "yes" if analysis_path(p.get("hostname", "?")).exists() else "no"
+    for report in reports:
+        host = html.escape(report["host"])
+        host_id = html.escape(report["host_id"])
+        who = html.escape(report["collected_as"])
+        received = html.escape(report["received"])
+        timestamp = html.escape(report["timestamp"])
+        sections = report["sections"]
+        status_class = "ok" if report["analyzed"] else "pending"
+        status_text = "Analyzed" if report["analyzed"] else "Pending"
+        identity_class = "root" if report["collected_as"] == "root" else "limited"
+        identity_text = "Root" if report["collected_as"] == "root" else "Limited"
         rows.append(
-            f"<tr><td>{host}</td><td>{who}</td><td>{recv}</td><td>{analyzed}</td>"
-            f"<td><a href='/report/{host}'>report</a> · "
-            f"<a href='/analysis/{host}'>analysis</a> · "
-            f"<form method='post' action='/analyze/{host}' style='display:inline'>"
-            f"<button type='submit'>run analysis</button></form></td></tr>"
+            "<tr>"
+            f"<td class='host'><strong>{host}</strong><span>Collected: {timestamp}</span></td>"
+            f"<td><span class='badge {identity_class}'>{identity_text}</span> <span>{who}</span></td>"
+            f"<td>{received}</td>"
+            f"<td><span class='badge {status_class}'>{status_text}</span></td>"
+            f"<td>{sections}</td>"
+            "<td><div class='actions'>"
+            f"<a class='button' href='/report/{host_id}'>Report</a>"
+            f"<a class='button' href='/analysis/{host_id}'>Analysis</a>"
+            f"<form method='post' action='/analyze/{host_id}'>"
+            "<button class='primary' type='submit'>Run</button></form>"
+            "</div></td>"
+            "</tr>"
         )
-    body = "".join(rows) or "<tr><td colspan=5>no reports yet</td></tr>"
-    return f"""<!doctype html><meta charset=utf-8><title>CCDC Hardening Tracker</title>
-<style>body{{font:14px/1.5 system-ui,sans-serif;margin:2rem;color:#111}}
-table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:.5rem .7rem;text-align:left}}
-th{{background:#f3f3f3}}a{{color:#0645ad}}code{{background:#f3f3f3;padding:1px 4px;border-radius:3px}}
-button{{font:inherit;padding:1px 8px;cursor:pointer}}</style>
-<h1>CCDC Hardening Tracker</h1>
-<p>Reports received from team hosts. POST to
-<code>/analyze/&lt;host&gt;</code> to run the LLM diagnosis.</p>
-<table><tr><th>host</th><th>collected as</th><th>received (UTC)</th><th>analyzed</th><th>links</th></tr>
-{body}</table>"""
+    body = "".join(rows) or "<tr><td class='empty' colspan='6'>No host reports yet</td></tr>"
+    model = html.escape(model_for(provider) or "not configured")
+    provider_label = html.escape(provider)
+    data_dir = html.escape(str(DATA_DIR))
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CCDC Hardening Tracker</title>
+  <style>{DASHBOARD_CSS}</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Blue Team Operations</p>
+        <h1>CCDC Hardening Tracker</h1>
+      </div>
+      <div class="runtime" aria-label="Runtime configuration">
+        <span>Provider: {provider_label}</span>
+        <span>Model: {model}</span>
+        <span>Data: {data_dir}</span>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="Report summary">
+      <div class="metric"><span>Hosts</span><strong>{total}</strong></div>
+      <div class="metric"><span>Analyzed</span><strong>{analyzed_count}</strong></div>
+      <div class="metric"><span>Pending</span><strong>{pending_count}</strong></div>
+      <div class="metric"><span>Root Reports</span><strong>{root_count}</strong></div>
+    </section>
+
+    <section class="table-panel" aria-label="Host reports">
+      <div class="table-heading">
+        <h2>Host Reports</h2>
+        <span>{total} total</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>Identity</th>
+              <th>Received UTC</th>
+              <th>Status</th>
+              <th>Sections</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>{body}</tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>"""

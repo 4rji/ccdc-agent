@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnostico con LLM de un reporte de hardening recolectado por el agente."""
+"""LLM diagnosis for a hardening report collected by the agent."""
 import os
 import textwrap
 
@@ -10,41 +10,41 @@ DEFAULT_MODELS = {
 MAX_REPORT_CHARS = int(os.environ.get("HARDEN_MAX_CHARS", "120000"))
 
 SYSTEM_PROMPT = textwrap.dedent("""\
-    Eres un operador senior de blue-team auditando UN host durante una
-    competencia de defensa tipo CCDC. Asume que un red team ya tiene accesos y
-    planta persistencia: usuarios extra, llaves SSH no autorizadas, backdoors en
-    cron y en systemd-timers, shells SUID root, listeners de reverse-shell,
-    archivos rc/profile modificados y secuestros de ld.so.preload. El blue team
-    intenta endurecer la maquina contra reloj.
+    You are a senior blue-team operator auditing ONE host during a CCDC-style
+    defense competition. Assume a red team may already have access and may have
+    planted persistence: extra users, unauthorized SSH keys, cron backdoors,
+    systemd timers, SUID root shells, reverse-shell listeners, modified
+    rc/profile files, and ld.so.preload hijacks. The blue team is hardening the
+    machine under time pressure.
 
-    Se te entrega la salida cruda de un script de recoleccion automatico.
-    Analizala y produce un reporte concreto y priorizado. Reglas:
-    - Cita la LINEA EXACTA de evidencia del reporte cuando marques algo.
-    - Da comandos de remediacion listos para copiar/pegar.
-    - Distingue "artefacto probable de red-team / compromiso" de "brecha de hardening".
-    - No inventes hallazgos que los datos no respalden. Si una seccion esta vacia
-      o dice que necesita root, dilo.
-    - Se conciso. Sin preambulo ni relleno.
+    You are given raw output from an automated collection script. Analyze it and
+    produce a concrete, prioritized report. Rules:
+    - Quote the EXACT evidence line from the report for each finding.
+    - Give remediation commands that are ready to copy and paste.
+    - Distinguish "probable red-team artifact / compromise" from "hardening gap".
+    - Do not invent findings that the data does not support. If a section is
+      empty or says root access is required, say so.
+    - Be concise. No preamble or filler.
     """)
 
 USER_TEMPLATE = textwrap.dedent("""\
     HOST: {host}
-    RECOLECTADO_COMO: {who}   (si no es root, la cobertura es parcial)
+    COLLECTED_AS: {who}   (if this is not root, coverage is partial)
     TIMESTAMP: {ts}
 
-    Produce estas secciones en orden:
+    Produce these sections in order:
 
-    1. SCORE DE HARDENING: X/100 — una linea de justificacion.
-    2. COMPROMISO PROBABLE / ARTEFACTOS DE RED-TEAM — por cada uno: linea de
-       evidencia, por que es sospechoso, comando de arreglo.
-    3. BRECHAS DE HARDENING (lo que aun les falta) — SSH (login de root,
-       PasswordAuthentication), estado del firewall, cuentas con password vacio o
-       UID 0 duplicado, servicios en escucha innecesarios, anomalias
-       world-writable/SUID, updates pendientes. Cada una con comando de arreglo.
-    4. PROCESOS / SERVICIOS / TAREAS SOSPECHOSAS — tabla corta: item | evidencia | accion.
-    5. CHECKLIST HAZLO-YA — ordenado, lo de mayor impacto primero.
+    1. HARDENING SCORE: X/100 - one-line justification.
+    2. PROBABLE COMPROMISE / RED-TEAM ARTIFACTS - for each item: evidence line,
+       why it is suspicious, remediation command.
+    3. HARDENING GAPS - SSH (root login, PasswordAuthentication), firewall
+       status, empty-password accounts or duplicate UID 0 accounts, unnecessary
+       listening services, world-writable/SUID anomalies, pending updates. Include
+       a remediation command for each item.
+    4. SUSPICIOUS PROCESSES / SERVICES / TASKS - short table: item | evidence | action.
+    5. DO-NOW CHECKLIST - ordered by highest impact first.
 
-    ===== REPORTE CRUDO DE RECOLECCION =====
+    ===== RAW COLLECTION REPORT =====
     {report}
     """)
 
@@ -73,12 +73,12 @@ def analyze_with_anthropic(prompt: str) -> str:
     try:
         from anthropic import Anthropic
     except ImportError:
-        return ("[analyzer] falta la libreria `anthropic`. Corre "
-                "`pip install anthropic` y exporta ANTHROPIC_API_KEY.")
+        return ("[analyzer] missing `anthropic` library. Run "
+                "`pip install anthropic` and export ANTHROPIC_API_KEY.")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return ("[analyzer] ANTHROPIC_API_KEY no esta definida. "
-                "Para OpenAI usa HARDEN_LLM_PROVIDER=openai y OPENAI_API_KEY.")
+        return ("[analyzer] ANTHROPIC_API_KEY is not set. "
+                "For OpenAI, use HARDEN_LLM_PROVIDER=openai and OPENAI_API_KEY.")
 
     model = model_for("anthropic")
     client = Anthropic()
@@ -90,8 +90,8 @@ def analyze_with_anthropic(prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as e:
-        return (f"[analyzer] fallo la llamada a Anthropic: {e}\n"
-                f"Revisa que HARDEN_MODEL ('{model}') sea un modelo al que tengas acceso.")
+        return (f"[analyzer] Anthropic call failed: {e}\n"
+                f"Check that HARDEN_MODEL ('{model}') is a model you can access.")
 
     return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
@@ -100,12 +100,12 @@ def analyze_with_openai(prompt: str) -> str:
     try:
         from openai import OpenAI
     except ImportError:
-        return ("[analyzer] falta la libreria `openai`. Corre "
-                "`pip install openai` y exporta OPENAI_API_KEY.")
+        return ("[analyzer] missing `openai` library. Run "
+                "`pip install openai` and export OPENAI_API_KEY.")
 
     if not os.environ.get("OPENAI_API_KEY"):
-        return ("[analyzer] OPENAI_API_KEY no esta definida. "
-                "Para Anthropic usa HARDEN_LLM_PROVIDER=anthropic y ANTHROPIC_API_KEY.")
+        return ("[analyzer] OPENAI_API_KEY is not set. "
+                "For Anthropic, use HARDEN_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY.")
 
     model = model_for("openai")
     client = OpenAI()
@@ -119,8 +119,8 @@ def analyze_with_openai(prompt: str) -> str:
             ],
         )
     except Exception as e:
-        return (f"[analyzer] fallo la llamada a OpenAI: {e}\n"
-                f"Revisa que HARDEN_MODEL ('{model}') sea un modelo al que tengas acceso.")
+        return (f"[analyzer] OpenAI call failed: {e}\n"
+                f"Check that HARDEN_MODEL ('{model}') is a model you can access.")
 
     return r.choices[0].message.content or ""
 
@@ -129,7 +129,7 @@ def analyze_report(payload: dict) -> str:
     decoded = payload.get("_decoded", {})
     report = build_report_text(decoded)
     if len(report) > MAX_REPORT_CHARS:
-        report = report[:MAX_REPORT_CHARS] + "\n...[truncado]..."
+        report = report[:MAX_REPORT_CHARS] + "\n...[truncated]..."
 
     prompt = USER_TEMPLATE.format(
         host=payload.get("hostname", "?"),
@@ -143,4 +143,4 @@ def analyze_report(payload: dict) -> str:
         return analyze_with_anthropic(prompt)
     if provider == "openai":
         return analyze_with_openai(prompt)
-    return "[analyzer] HARDEN_LLM_PROVIDER debe ser 'anthropic' u 'openai'."
+    return "[analyzer] HARDEN_LLM_PROVIDER must be 'anthropic' or 'openai'."

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# hardening_agent.sh — CCDC Linux hardening state collector + phone-home agent
+# hardening_agent.sh - CCDC Linux hardening state collector + phone-home agent
 #
-# Recolecta servicios, procesos, tareas programadas, permisos, usuarios, red,
-# firewall y puntos de persistencia; luego IMPRIME o ENVÍA un reporte JSON al
-# servidor central para diagnóstico con LLM.
+# Collects services, processes, scheduled tasks, permissions, users, network,
+# firewall, and persistence points, then PRINTS or SENDS a JSON report to the
+# central server for LLM diagnosis.
 #
-#   ./hardening_agent.sh text     # volcado legible a stdout
-#   ./hardening_agent.sh local    # JSON a stdout (sin red)
-#   ./hardening_agent.sh send      # POST JSON a $HARDEN_SERVER  (default)
+#   ./hardening_agent.sh text     # human-readable dump to stdout
+#   ./hardening_agent.sh local    # JSON to stdout (no network)
+#   ./hardening_agent.sh send      # POST JSON to $HARDEN_SERVER  (default)
 #
-# Config por variables de entorno:
+# Config via environment variables:
 #   HARDEN_SERVER=http://10.0.0.5:8000/report
-#   HARDEN_TOKEN=secreto-compartido
+#   HARDEN_TOKEN=shared-secret
 #
-# Correr como root para cobertura completa (estado de shadow, todos los
-# crontabs, todas las authorized_keys). NO exporta hashes, solo su estado.
+# Run as root for full coverage (shadow status, all crontabs, all
+# authorized_keys). Password hashes are NOT exported, only their status.
 
 set -uo pipefail
 
@@ -26,7 +26,7 @@ CAP=200
 
 b64()  { printf '%s' "${1:-}" | base64 | tr -d '\n'; }
 jesc() { printf '"%s"' "$(printf '%s' "${1:-}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/ /g')"; }
-h()    { printf '\n## %s\n' "$1"; }              # sub-encabezado dentro de una sección
+h()    { printf '\n## %s\n' "$1"; }              # sub-header inside a section
 tmo()  { timeout "$FIND_TIMEOUT" "$@" 2>/dev/null || true; }
 
 collect_system() {
@@ -34,64 +34,64 @@ collect_system() {
   h "OS release";       cat /etc/os-release 2>/dev/null
   h "Uptime / load";    uptime 2>/dev/null
   h "Last boot";        who -b 2>/dev/null
-  h "Identidad actual"; id 2>/dev/null
+  h "Current identity"; id 2>/dev/null
 }
 
 collect_users() {
-  h "Cuentas (name uid gid shell)"
+  h "Accounts (name uid gid shell)"
   awk -F: '{print $1, "uid="$3, "gid="$4, "shell="$7}' /etc/passwd 2>/dev/null
-  h "Cuentas UID 0 (deberia ser SOLO root)"
+  h "UID 0 accounts (should be ONLY root)"
   awk -F: '$3==0{print $1}' /etc/passwd 2>/dev/null
-  h "Cuentas con shell interactiva"
+  h "Accounts with an interactive shell"
   awk -F: '$7 ~ /(bash|sh|zsh|ksh|fish)$/{print $1" -> "$7}' /etc/passwd 2>/dev/null
-  h "Estado de contrasena (EMPTY!/locked/set — NO se exportan hashes)"
+  h "Password status (EMPTY!/locked/set - hashes are NOT exported)"
   if [ -r /etc/shadow ]; then
     awk -F: '{s=$2; st=(s==""?"EMPTY!":(s ~ /^[!*]/?"locked":"set")); print $1": "st}' /etc/shadow 2>/dev/null
   else
-    echo "(se necesita root para leer /etc/shadow)"
+    echo "(root is required to read /etc/shadow)"
   fi
-  h "Sudoers / grupos privilegiados"
+  h "Sudoers / privileged groups"
   grep -Ev '^\s*#|^\s*$' /etc/sudoers 2>/dev/null
   cat /etc/sudoers.d/* 2>/dev/null | grep -Ev '^\s*#|^\s*$'
   getent group sudo wheel admin 2>/dev/null
-  h "Logins exitosos recientes"; last -n 15 2>/dev/null
-  h "Logins FALLIDOS recientes"; lastb -n 15 2>/dev/null
+  h "Recent successful logins"; last -n 15 2>/dev/null
+  h "Recent FAILED logins"; lastb -n 15 2>/dev/null
 }
 
 collect_processes() {
-  h "Lista completa de procesos"
+  h "Full process list"
   ps auxww 2>/dev/null
-  h "Procesos lanzados desde tmp/shm/var-tmp (sospechoso)"
+  h "Processes launched from tmp/shm/var-tmp (suspicious)"
   ps auxww 2>/dev/null | grep -E '/tmp/|/dev/shm/|/var/tmp/' | grep -v grep
-  h "Binarios borrados aun corriendo (posible malware en memoria)"
+  h "Running deleted binaries (possible in-memory malware)"
   ls -l /proc/*/exe 2>/dev/null | grep -i '(deleted)'
-  h "Herramientas de shell/tunel corriendo"
+  h "Shell/tunnel tools currently running"
   ps auxww 2>/dev/null | grep -E '\b(nc|ncat|socat|/bin/bash -i|python.*socket|perl.*socket|msf|meterpreter)\b' | grep -v grep
 }
 
 collect_network() {
-  h "Sockets en escucha (con proceso)"
+  h "Listening sockets (with process)"
   ss -tulpnw 2>/dev/null || netstat -tulpnw 2>/dev/null
-  h "Conexiones establecidas"
+  h "Established connections"
   ss -tupnw state established 2>/dev/null || { netstat -tupnw 2>/dev/null | grep ESTAB; }
 }
 
 collect_services() {
-  h "Servicios corriendo"
+  h "Running services"
   systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null \
     || service --status-all 2>/dev/null
-  h "Servicios habilitados al arranque"
+  h "Enabled-at-boot services"
   systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend 2>/dev/null
-  h "Unidades fallidas"
+  h "Failed units"
   systemctl --failed --no-pager --no-legend 2>/dev/null
 }
 
 collect_scheduled() {
-  h "Crontab del sistema"; cat /etc/crontab 2>/dev/null
-  h "cron.d / directorios periodicos"
+  h "System crontab"; cat /etc/crontab 2>/dev/null
+  h "cron.d / periodic directories"
   ls -la /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly 2>/dev/null
   cat /etc/cron.d/* 2>/dev/null
-  h "Crontabs por usuario"
+  h "Per-user crontabs"
   for u in $(cut -f1 -d: /etc/passwd 2>/dev/null); do
     out="$(crontab -u "$u" -l 2>/dev/null)"
     [ -n "$out" ] && { echo "### $u"; echo "$out"; }
@@ -102,43 +102,43 @@ collect_scheduled() {
 }
 
 collect_permissions() {
-  h "Binarios SUID";  tmo find / -xdev -perm -4000 -type f | head -"$CAP"
-  h "Binarios SGID";  tmo find / -xdev -perm -2000 -type f | head -"$CAP"
-  h "Archivos world-writable"; tmo find / -xdev -type f -perm -0002 | head -"$CAP"
-  h "Directorios world-writable sin sticky bit"; tmo find / -xdev -type d -perm -0002 ! -perm -1000 | head -50
-  h "Archivos sin dueno (nouser/nogroup)"; tmo find / -xdev \( -nouser -o -nogroup \) | head -50
+  h "SUID binaries";  tmo find / -xdev -perm -4000 -type f | head -"$CAP"
+  h "SGID binaries";  tmo find / -xdev -perm -2000 -type f | head -"$CAP"
+  h "World-writable files"; tmo find / -xdev -type f -perm -0002 | head -"$CAP"
+  h "World-writable directories without sticky bit"; tmo find / -xdev -type d -perm -0002 ! -perm -1000 | head -50
+  h "Files with no owner (nouser/nogroup)"; tmo find / -xdev \( -nouser -o -nogroup \) | head -50
 }
 
 collect_ssh() {
-  h "sshd_config (lineas efectivas)"
+  h "sshd_config (effective lines)"
   grep -Ev '^\s*#|^\s*$' /etc/ssh/sshd_config 2>/dev/null
-  h "authorized_keys por usuario"
+  h "authorized_keys per user"
   for home in /root /home/*; do
     [ -f "$home/.ssh/authorized_keys" ] && { echo "### $home"; cat "$home/.ssh/authorized_keys" 2>/dev/null; }
   done
 }
 
 collect_firewall() {
-  h "Reglas iptables"; iptables -S 2>/dev/null
+  h "iptables rules"; iptables -S 2>/dev/null
   h "Ruleset nftables"; nft list ruleset 2>/dev/null
   h "ufw status"; ufw status verbose 2>/dev/null
   h "firewalld"; firewall-cmd --list-all 2>/dev/null
 }
 
 collect_persistence() {
-  h "ld.so.preload (deberia estar vacio/ausente)"; cat /etc/ld.so.preload 2>/dev/null
+  h "ld.so.preload (should be empty or absent)"; cat /etc/ld.so.preload 2>/dev/null
   h "Scripts init.d"; ls -la /etc/init.d 2>/dev/null
   h "Scripts profile.d"; ls -la /etc/profile.d 2>/dev/null
-  h "Unidades systemd del sistema"; ls -la /etc/systemd/system 2>/dev/null
-  h "Archivos rc de shell (mtime)"
+  h "System systemd units"; ls -la /etc/systemd/system 2>/dev/null
+  h "Shell rc files (mtime)"
   for home in /root /home/*; do
     ls -la "$home/.bashrc" "$home/.bash_profile" "$home/.profile" 2>/dev/null
   done
-  h "Binarios de sistema modificados (<7 dias)"
+  h "System binaries modified (<7 days)"
   tmo find /usr/bin /usr/sbin /bin /sbin -mtime -7 -type f | head -50
 }
 
-# ---- recolectar todo ----
+# ---- collect everything ----
 declare -A CHECKS
 CHECKS[system]="$(collect_system)"
 CHECKS[users]="$(collect_users)"
@@ -187,15 +187,15 @@ case "$MODE" in
     if command -v curl >/dev/null 2>&1; then
       printf '%s' "$payload" | curl -sS -X POST "$SERVER_URL" \
         -H "Content-Type: application/json" -H "X-Auth-Token: $AUTH_TOKEN" \
-        --data-binary @- && echo && echo "[+] enviado" || echo "[!] fallo el envio"
+        --data-binary @- && echo && echo "[+] sent" || echo "[!] send failed"
     elif command -v wget >/dev/null 2>&1; then
       printf '%s' "$payload" | wget -q -O- --header="Content-Type: application/json" \
         --header="X-Auth-Token: $AUTH_TOKEN" --post-data="$payload" "$SERVER_URL" \
-        && echo "[+] enviado (wget)" || echo "[!] fallo el envio"
+        && echo "[+] sent (wget)" || echo "[!] send failed"
     else
-      echo "[!] no hay curl ni wget; usa modo 'local' y canaliza el JSON tu mismo"
+      echo "[!] curl or wget is required; use 'local' mode and send the JSON manually"
     fi
     ;;
   *)
-    echo "uso: $0 {text|local|send}"; exit 1;;
+    echo "usage: $0 {text|local|send}"; exit 1;;
 esac
