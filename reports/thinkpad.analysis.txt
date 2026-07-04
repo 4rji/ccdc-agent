@@ -1,33 +1,55 @@
-1. HARDENING SCORE: 50/100 - No firewall is active; SSH password protection not mentioned.
+1. HARDENING SCORE: 50/100 - Critical gaps in firewall setup and non-standard software configurations suggest potential security weaknesses.
 
-2. PROBABLE COMPROMISE / RED-TEAM ARTIFACTS:
-   - Line: `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283,fd=7))`
-     - Suspicious open port likely used by non-standard application.
-     - Remediation: `kill -9 1283; systemctl disable python-daemon.service; netstat -tulnp | grep :8080`
+2. PROBABLE COMPROMISE / RED-TEAM ARTIFACTS
+- Evidence: `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL`
+  Why suspicious: Disables password prompt for all commands, which can be abused.
+  Remediation: `sed -i '/%kali-trusted/d' /etc/sudoers.d/somefile` (replace somefile with the actual sudoers file).
 
-3. HARDENING GAPS:
-   - SSH Root Login and PasswordAuthentication Not Confirmed or Disabled.
-     - Remediation: `sed -i "/PermitRootLogin/c\PermitRootLogin no" /etc/ssh/sshd_config; sed -i "/PasswordAuthentication/c\PasswordAuthentication no" /etc/ssh/sshd_config; systemctl restart ssh`
-   - Firewall Not Active.
-     - Evidence: `-P INPUT ACCEPT`
-     - Remediation: Install Uncomplicated Firewall: `apt-get install ufw; ufw enable; ufw default deny incoming; ufw allow 22/tcp`
-   - Unnecessary Listening Service on Port 8080.
-     - Remediation: `fuser -k 8080/tcp; systemctl disable <service-name>`
-   - SGID Binaries Under Docker Overlay Indicate Potential Persistence.
-     - Review and remove unnecessary containers: `docker ps -a; docker container rm <container_id>`
-   - World-writable Files `.dll` in `/home/natasha/digi-techsupport/dist/win-unpacked/`:
-     - Remediation: `chmod -R o-w /home/natasha/digi-techsupport/dist/win-unpacked/`
-   - Pending Updates Not Mentioned.
-     - Regular system updates recommended: `apt-get update && apt-get upgrade -y`
+- Evidence: `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283,fd=7))`
+  Why suspicious: Python listening on port 8080 without clear purpose.
+  Remediation: `kill -9 1283` and review `/usr/bin/python -m bluehood.daemon` configuration.
 
-4. SUSPICIOUS PROCESSES / SERVICES / TASKS:
-   | Item                       | Evidence                                                              | Action                                   |
-   |----------------------------|-----------------------------------------------------------------------|------------------------------------------|
-   | Python Daemon on Port 8080 | `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283))` | `kill -9 1283; netstat -tulnp | grep :8080` |
+3. HARDENING GAPS
+- SSH configuration allowing Agent Forwarding and TCP Forwarding:
+  ```
+  AllowAgentForwarding yes
+  AllowTcpForwarding yes
+  ```
+  Remediation: 
+  ```
+  echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config
+  echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
+  systemctl restart sshd
+  ```
+  
+- Firewall allows all INPUT:
+  ```
+  -P INPUT ACCEPT
+  ```
+  Remediation: 
+  ```
+  iptables -P INPUT DROP
+  systemctl restart iptables
+  ```
 
-5. DO-NOW CHECKLIST:
-   - Secure SSH: Disable root login and password authentication.
-   - Activate and Configure Firewall.
-   - Investigate and disable/terminate unknown process on port 8080.
-   - Remove world writability from sensitive directories.
-   - Verify all automatic updates are enabled and applied promptly.
+- World-writable files in user directory:
+  ```
+  /home/natasha/digi-techsupport/dist/win-unpacked/*.dll
+  ```
+  Remediation:
+  ```
+  chmod -R o-w /home/natasha/digi-techsupport/dist/win-unpacked/
+  ```
+
+4. SUSPICIOUS PROCESSES / SERVICES / TASKS
+| Item                          | Evidence                                                             | Action                        |
+|-------------------------------|----------------------------------------------------------------------|-------------------------------|
+| Python on Port 8080           | `tcp LISTEN 0 128 0.0.0.0:8080 ...users:(("python",pid=1283...`      | Investigate, then kill if needed: `kill -9 1283` |
+| %kali-trusted Sudo Permission | `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL`                        | Remove line                   |
+
+5. DO-NOW CHECKLIST
+- Block all incoming traffic by default on firewall with `iptables -P INPUT DROP`.
+- Remove `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL` entry from the sudoers file.
+- Disable unnecessary TCP forwarding and agent forwarding in SSH configuration.
+- Kill suspicious python process listening on port 8080.
+- Restrict world-writable permissions in `/home/natasha/digi-techsupport/dist/win-unpacked/`.
