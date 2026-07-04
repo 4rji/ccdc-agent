@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""CCDC hardening tracker — recibe reportes del agente, corre el diagnostico
-con LLM y muestra el avance del equipo.
+"""CCDC hardening tracker — receives agent reports, runs the LLM diagnosis,
+and shows team progress.
 
-Correr:
+Run:
     pip install fastapi uvicorn anthropic openai
-    HARDEN_TOKEN=secreto ANTHROPIC_API_KEY=sk-... \
+    HARDEN_TOKEN=secret ANTHROPIC_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 
-    # O usa OpenAI:
-    HARDEN_TOKEN=secreto HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
+    # Or use OpenAI:
+    HARDEN_TOKEN=secret HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import os
@@ -59,7 +59,7 @@ async def receive_report(request: Request, x_auth_token: str = Header(default=""
     payload = await request.json()
     payload["_decoded"] = decode_checks(payload.get("checks", {}))
     payload["_received"] = datetime.datetime.utcnow().isoformat() + "Z"
-    payload.pop("checks", None)  # descarta el blob base64, conserva lo decodificado
+    payload.pop("checks", None)  # discard the base64 blob, keep the decoded data
     report_path(payload.get("hostname", "unknown")).write_text(json.dumps(payload, indent=2))
     return {"status": "ok", "host": payload.get("hostname")}
 
@@ -68,7 +68,7 @@ async def receive_report(request: Request, x_auth_token: str = Header(default=""
 def analyze(host: str):
     p = report_path(host)
     if not p.exists():
-        raise HTTPException(404, "no hay reporte para ese host")
+        raise HTTPException(404, "no report for that host")
     payload = json.loads(p.read_text())
     result = analyze_report(payload)
     analysis_path(host).write_text(result)
@@ -78,14 +78,14 @@ def analyze(host: str):
 @app.get("/analysis/{host}", response_class=PlainTextResponse)
 def get_analysis(host: str):
     p = analysis_path(host)
-    return p.read_text() if p.exists() else f"sin analisis aun — haz POST /analyze/{safe(host)}"
+    return p.read_text() if p.exists() else f"no analysis yet - POST /analyze/{safe(host)}"
 
 
 @app.get("/report/{host}", response_class=PlainTextResponse)
 def get_report(host: str):
     p = report_path(host)
     if not p.exists():
-        raise HTTPException(404, "no hay reporte")
+        raise HTTPException(404, "no report")
     dec = json.loads(p.read_text()).get("_decoded", {})
     return "\n".join(f"===== {k.upper()} =====\n{v}\n" for k, v in dec.items())
 
@@ -101,19 +101,19 @@ def dashboard():
         host = html.escape(p.get("hostname", "?"))
         who = html.escape(p.get("collected_as", "?"))
         recv = html.escape(p.get("_received", "?"))
-        analyzed = "si" if analysis_path(p.get("hostname", "?")).exists() else "no"
+        analyzed = "yes" if analysis_path(p.get("hostname", "?")).exists() else "no"
         rows.append(
             f"<tr><td>{host}</td><td>{who}</td><td>{recv}</td><td>{analyzed}</td>"
-            f"<td><a href='/report/{host}'>reporte</a> · "
-            f"<a href='/analysis/{host}'>analisis</a></td></tr>"
+            f"<td><a href='/report/{host}'>report</a> · "
+            f"<a href='/analysis/{host}'>analysis</a></td></tr>"
         )
-    body = "".join(rows) or "<tr><td colspan=5>aun no hay reportes</td></tr>"
+    body = "".join(rows) or "<tr><td colspan=5>no reports yet</td></tr>"
     return f"""<!doctype html><meta charset=utf-8><title>CCDC Hardening Tracker</title>
 <style>body{{font:14px/1.5 system-ui,sans-serif;margin:2rem;color:#111}}
 table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccc;padding:.5rem .7rem;text-align:left}}
 th{{background:#f3f3f3}}a{{color:#0645ad}}code{{background:#f3f3f3;padding:1px 4px;border-radius:3px}}</style>
 <h1>CCDC Hardening Tracker</h1>
-<p>Reportes recibidos de los hosts del equipo. Haz POST a
-<code>/analyze/&lt;host&gt;</code> para correr el diagnostico con LLM.</p>
-<table><tr><th>host</th><th>recolectado como</th><th>recibido (UTC)</th><th>analizado</th><th>links</th></tr>
+<p>Reports received from team hosts. POST to
+<code>/analyze/&lt;host&gt;</code> to run the LLM diagnosis.</p>
+<table><tr><th>host</th><th>collected as</th><th>received (UTC)</th><th>analyzed</th><th>links</th></tr>
 {body}</table>"""
