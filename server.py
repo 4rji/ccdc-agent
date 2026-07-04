@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""CCDC hardening tracker - receives agent reports, runs the LLM diagnosis,
-and shows team progress.
+"""Legacy FastAPI server for the CCDC hardening tracker.
+
+The primary server is now server.go. This file is kept for compatibility: it
+receives agent reports, runs the LLM diagnosis, and shows team progress.
 
 Run:
     pip install fastapi uvicorn anthropic openai
-    HARDEN_TOKEN=secret ANTHROPIC_API_KEY=sk-... \
+    HARDEN_TOKEN=ccdcagent2026 ANTHROPIC_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 
     # Or use OpenAI:
-    HARDEN_TOKEN=secret HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
+    HARDEN_TOKEN=ccdcagent2026 HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import os
@@ -25,7 +27,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from analyzer import analyze_report, model_for, select_provider
 
-AUTH_TOKEN = os.environ.get("HARDEN_TOKEN", "changeme-shared-secret")
+AUTH_TOKEN = os.environ.get("HARDEN_TOKEN", "ccdcagent2026")
 DATA_DIR = pathlib.Path(os.environ.get("HARDEN_DATA", "./reports"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 

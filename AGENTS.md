@@ -2,27 +2,34 @@
 
 ## Project Structure & Module Organization
 
-This repository is a small CCDC hardening tracker with three primary runtime files:
+This repository is a small CCDC hardening tracker with these primary runtime files:
 
 - `hardening_agent.sh`: Linux host collector. It gathers security state and prints or POSTs a JSON report.
-- `server.py`: FastAPI app that receives reports, stores decoded JSON, serves the dashboard, and triggers analysis.
+- `server.go`: Go HTTP server that receives reports, stores decoded JSON, serves the dashboard, and triggers analysis.
 - `analyzer.py`: LLM prompt builder and provider client wrapper for Anthropic or OpenAI.
+- `server.py`: legacy FastAPI server kept for compatibility.
 - `README.md` and `README_spanish.md`: user-facing setup and operating documentation.
 
 Runtime reports are written to `./reports` by default through `HARDEN_DATA`; treat them as generated data and do not commit sensitive host output.
 
 ## Build, Test, and Development Commands
 
-There is no build step or dependency lock file. Install runtime dependencies manually:
+There is no dependency lock file. Run the Go server directly:
 
 ```bash
-pip install fastapi uvicorn anthropic openai
+HARDEN_TOKEN=ccdcagent2026 ANTHROPIC_API_KEY=sk-... go run .
 ```
 
-Run the local server:
+Install Python analyzer dependencies manually when using `/analyze/{host}`:
 
 ```bash
-HARDEN_TOKEN=secret ANTHROPIC_API_KEY=sk-... uvicorn server:app --host 0.0.0.0 --port 8000
+pip install anthropic openai
+```
+
+Run the legacy FastAPI server only when needed:
+
+```bash
+HARDEN_TOKEN=ccdcagent2026 ANTHROPIC_API_KEY=sk-... uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
 Run agent checks locally:
@@ -35,6 +42,7 @@ sudo ./hardening_agent.sh local
 Validate syntax before submitting changes:
 
 ```bash
+go test ./...
 python3 -m py_compile analyzer.py server.py
 bash -n hardening_agent.sh
 ```
@@ -47,7 +55,7 @@ For shell code, keep Bash-compatible syntax, quote variable expansions, and foll
 
 ## Testing Guidelines
 
-No automated test suite exists yet. At minimum, run Python compilation, Bash syntax validation, and a manual smoke test of `uvicorn server:app`. For behavior changes, test both `hardening_agent.sh local` and a `/report` then `/analyze/{host}` flow with a non-production token.
+At minimum, run Go tests, Python compilation, Bash syntax validation, and a manual smoke test of `go run .`. For behavior changes, test both `hardening_agent.sh local` and a `/report` then `/analyze/{host}` flow with a non-production token.
 
 ## Commit & Pull Request Guidelines
 

@@ -11,7 +11,7 @@
 #
 # Config via environment variables:
 #   HARDEN_SERVER=http://10.0.0.5:8000/report
-#   HARDEN_TOKEN=shared-secret
+#   HARDEN_TOKEN=ccdcagent2026
 #
 # Run as root for full coverage (shadow status, all crontabs, all
 # authorized_keys). Password hashes are NOT exported, only their status.
@@ -19,7 +19,7 @@
 set -uo pipefail
 
 SERVER_URL="${HARDEN_SERVER:-http://127.0.0.1:8000/report}"
-AUTH_TOKEN="${HARDEN_TOKEN:-changeme-shared-secret}"
+AUTH_TOKEN="${HARDEN_TOKEN:-ccdcagent2026}"
 MODE="${1:-send}"
 FIND_TIMEOUT="${HARDEN_FIND_TIMEOUT:-25}"
 CAP=200
