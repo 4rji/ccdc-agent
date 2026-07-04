@@ -39,26 +39,33 @@ app = FastAPI(title="CCDC Hardening Tracker")
 
 DASHBOARD_CSS = """
 :root {
-  color-scheme: light;
-  --bg: #f6f7f2;
-  --panel: #ffffff;
-  --panel-soft: #f9faf7;
-  --ink: #17211b;
-  --muted: #667066;
-  --line: #d9ded3;
-  --accent: #245b45;
-  --accent-strong: #174633;
-  --warn: #9a5b00;
-  --danger: #9f2f2f;
-  --ok-bg: #e7f3ec;
-  --warn-bg: #fff4db;
-  --danger-bg: #fbe7e5;
-  --info-bg: #e8f0f7;
+  color-scheme: dark;
+  --bg: #05070d;
+  --panel: #0d1420;
+  --panel-soft: #121d2b;
+  --panel-hot: #161328;
+  --ink: #ecfff8;
+  --muted: #91a7ad;
+  --line: #233f4b;
+  --accent: #00f5d4;
+  --accent-strong: #ff2bd6;
+  --warn: #ffd166;
+  --danger: #ff5f6d;
+  --ok-bg: #092923;
+  --warn-bg: #30240b;
+  --danger-bg: #321219;
+  --info-bg: #0b2535;
+  --glow: rgba(0, 245, 212, 0.24);
+  --hot-glow: rgba(255, 43, 214, 0.20);
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, rgba(5, 7, 13, 0.90), rgba(5, 7, 13, 1)),
+    repeating-linear-gradient(90deg, rgba(0, 245, 212, 0.045) 0 1px, transparent 1px 76px),
+    repeating-linear-gradient(0deg, rgba(255, 43, 214, 0.035) 0 1px, transparent 1px 76px),
+    var(--bg);
   color: var(--ink);
   font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -81,12 +88,15 @@ body {
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
+  text-shadow: 0 0 16px var(--glow);
 }
 h1 {
   margin: 0;
   font-size: clamp(30px, 5vw, 48px);
   line-height: 1;
   letter-spacing: 0;
+  color: var(--ink);
+  text-shadow: 0 0 24px rgba(0, 245, 212, 0.16);
 }
 .runtime {
   display: flex;
@@ -104,6 +114,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--panel);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
   padding: 3px 9px;
   white-space: nowrap;
 }
@@ -117,6 +128,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  box-shadow: 0 0 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.03);
   padding: 14px 16px;
 }
 .metric span {
@@ -131,12 +143,15 @@ h1 {
   margin-top: 6px;
   font-size: 30px;
   line-height: 1;
+  color: var(--accent);
+  text-shadow: 0 0 18px var(--glow);
 }
 .table-panel {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(0, 245, 212, 0.04);
 }
 .table-heading {
   display: flex;
@@ -172,8 +187,8 @@ td {
   vertical-align: middle;
 }
 th {
-  background: #fbfcf8;
-  color: #465047;
+  background: #0a101a;
+  color: #95fff0;
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
@@ -182,7 +197,7 @@ tr:last-child td {
   border-bottom: 0;
 }
 tbody tr:hover {
-  background: #fcf8ed;
+  background: rgba(0, 245, 212, 0.06);
 }
 .host strong {
   display: block;
@@ -195,22 +210,22 @@ tbody tr:hover {
   margin-top: 2px;
 }
 .badge.ok {
-  border-color: #b7d8c5;
+  border-color: rgba(0, 245, 212, 0.56);
   background: var(--ok-bg);
-  color: #1f6842;
+  color: #66ffe8;
 }
 .badge.pending {
-  border-color: #efd08d;
+  border-color: rgba(255, 209, 102, 0.62);
   background: var(--warn-bg);
   color: var(--warn);
 }
 .badge.root {
-  border-color: #b9d5c6;
+  border-color: rgba(0, 245, 212, 0.56);
   background: var(--ok-bg);
-  color: var(--accent-strong);
+  color: var(--accent);
 }
 .badge.limited {
-  border-color: #edc7c1;
+  border-color: rgba(255, 95, 109, 0.62);
   background: var(--danger-bg);
   color: var(--danger);
 }
@@ -228,22 +243,25 @@ button {
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--panel);
+  background: #0a121d;
   color: var(--ink);
   padding: 5px 10px;
   font: inherit;
   font-weight: 700;
   text-decoration: none;
   cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 button.primary {
   border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  background: linear-gradient(135deg, rgba(0, 245, 212, 0.95), rgba(255, 43, 214, 0.78));
+  color: #041013;
+  box-shadow: 0 0 20px var(--glow);
 }
 .button:hover,
 button:hover {
   border-color: var(--accent);
+  box-shadow: 0 0 18px var(--glow);
 }
 .empty {
   padding: 34px 16px;
@@ -265,6 +283,7 @@ button:hover {
 }
 .back-link:hover {
   color: var(--accent-strong);
+  text-shadow: 0 0 14px var(--hot-glow);
 }
 .analysis-summary {
   display: grid;
@@ -279,6 +298,7 @@ button:hover {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 43, 214, 0.035);
 }
 .score-panel {
   display: grid;
@@ -294,19 +314,20 @@ button:hover {
   height: 96px;
   border: 9px solid var(--line);
   border-radius: 50%;
-  background: #fff;
+  background: radial-gradient(circle at 50% 45%, #132538 0, #07111c 66%, #04070d 100%);
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.55), 0 0 22px rgba(0, 245, 212, 0.12);
 }
 .score-ring.ok {
-  border-color: #78b58e;
+  border-color: var(--accent);
 }
 .score-ring.warn {
-  border-color: #d8a83f;
+  border-color: var(--warn);
 }
 .score-ring.danger {
-  border-color: #cf6d62;
+  border-color: var(--danger);
 }
 .score-ring.neutral {
-  border-color: #aab2aa;
+  border-color: #6f8490;
 }
 .score-ring strong {
   font-size: 28px;
@@ -359,6 +380,8 @@ button:hover {
 }
 .section-pills a:hover {
   border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 16px var(--glow);
 }
 .analysis-layout {
   display: grid;
@@ -415,13 +438,14 @@ button:hover {
 .analysis-content code {
   border: 1px solid var(--line);
   border-radius: 5px;
-  background: #f3f5f0;
+  background: #08111a;
+  color: #9dffef;
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
 }
 .analysis-content strong {
-  color: #111812;
+  color: #ffffff;
 }
 .analysis-content .table-scroll {
   margin: 2px 0 13px;

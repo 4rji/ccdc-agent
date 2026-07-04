@@ -1,0 +1,33 @@
+1. HARDENING SCORE: 50/100 - No firewall is active; SSH password protection not mentioned.
+
+2. PROBABLE COMPROMISE / RED-TEAM ARTIFACTS:
+   - Line: `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283,fd=7))`
+     - Suspicious open port likely used by non-standard application.
+     - Remediation: `kill -9 1283; systemctl disable python-daemon.service; netstat -tulnp | grep :8080`
+
+3. HARDENING GAPS:
+   - SSH Root Login and PasswordAuthentication Not Confirmed or Disabled.
+     - Remediation: `sed -i "/PermitRootLogin/c\PermitRootLogin no" /etc/ssh/sshd_config; sed -i "/PasswordAuthentication/c\PasswordAuthentication no" /etc/ssh/sshd_config; systemctl restart ssh`
+   - Firewall Not Active.
+     - Evidence: `-P INPUT ACCEPT`
+     - Remediation: Install Uncomplicated Firewall: `apt-get install ufw; ufw enable; ufw default deny incoming; ufw allow 22/tcp`
+   - Unnecessary Listening Service on Port 8080.
+     - Remediation: `fuser -k 8080/tcp; systemctl disable <service-name>`
+   - SGID Binaries Under Docker Overlay Indicate Potential Persistence.
+     - Review and remove unnecessary containers: `docker ps -a; docker container rm <container_id>`
+   - World-writable Files `.dll` in `/home/natasha/digi-techsupport/dist/win-unpacked/`:
+     - Remediation: `chmod -R o-w /home/natasha/digi-techsupport/dist/win-unpacked/`
+   - Pending Updates Not Mentioned.
+     - Regular system updates recommended: `apt-get update && apt-get upgrade -y`
+
+4. SUSPICIOUS PROCESSES / SERVICES / TASKS:
+   | Item                       | Evidence                                                              | Action                                   |
+   |----------------------------|-----------------------------------------------------------------------|------------------------------------------|
+   | Python Daemon on Port 8080 | `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283))` | `kill -9 1283; netstat -tulnp | grep :8080` |
+
+5. DO-NOW CHECKLIST:
+   - Secure SSH: Disable root login and password authentication.
+   - Activate and Configure Firewall.
+   - Investigate and disable/terminate unknown process on port 8080.
+   - Remove world writability from sensitive directories.
+   - Verify all automatic updates are enabled and applied promptly.
