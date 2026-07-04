@@ -3,8 +3,10 @@
 import os
 import textwrap
 
-# IMPORTANTE: pon aqui un modelo al que TU tengas acceso con tu API key.
-MODEL = os.environ.get("HARDEN_MODEL", "claude-sonnet-4-5")
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-5",
+    "openai": "gpt-4o",
+}
 MAX_REPORT_CHARS = int(os.environ.get("HARDEN_MAX_CHARS", "120000"))
 
 SYSTEM_PROMPT = textwrap.dedent("""\
@@ -54,6 +56,75 @@ def build_report_text(decoded: dict) -> str:
     return "\n".join(parts)
 
 
+def select_provider() -> str:
+    configured = os.environ.get("HARDEN_LLM_PROVIDER", "").strip().lower()
+    if configured:
+        return configured
+    if os.environ.get("OPENAI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        return "openai"
+    return "anthropic"
+
+
+def model_for(provider: str) -> str:
+    return os.environ.get("HARDEN_MODEL", DEFAULT_MODELS.get(provider, ""))
+
+
+def analyze_with_anthropic(prompt: str) -> str:
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        return ("[analyzer] falta la libreria `anthropic`. Corre "
+                "`pip install anthropic` y exporta ANTHROPIC_API_KEY.")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return ("[analyzer] ANTHROPIC_API_KEY no esta definida. "
+                "Para OpenAI usa HARDEN_LLM_PROVIDER=openai y OPENAI_API_KEY.")
+
+    model = model_for("anthropic")
+    client = Anthropic()
+    try:
+        msg = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        return (f"[analyzer] fallo la llamada a Anthropic: {e}\n"
+                f"Revisa que HARDEN_MODEL ('{model}') sea un modelo al que tengas acceso.")
+
+    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+
+
+def analyze_with_openai(prompt: str) -> str:
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return ("[analyzer] falta la libreria `openai`. Corre "
+                "`pip install openai` y exporta OPENAI_API_KEY.")
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return ("[analyzer] OPENAI_API_KEY no esta definida. "
+                "Para Anthropic usa HARDEN_LLM_PROVIDER=anthropic y ANTHROPIC_API_KEY.")
+
+    model = model_for("openai")
+    client = OpenAI()
+    try:
+        r = client.chat.completions.create(
+            model=model,
+            max_tokens=4096,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except Exception as e:
+        return (f"[analyzer] fallo la llamada a OpenAI: {e}\n"
+                f"Revisa que HARDEN_MODEL ('{model}') sea un modelo al que tengas acceso.")
+
+    return r.choices[0].message.content or ""
+
+
 def analyze_report(payload: dict) -> str:
     decoded = payload.get("_decoded", {})
     report = build_report_text(decoded)
@@ -67,36 +138,9 @@ def analyze_report(payload: dict) -> str:
         report=report,
     )
 
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        return ("[analyzer] falta la libreria `anthropic`. Corre "
-                "`pip install anthropic` y exporta ANTHROPIC_API_KEY.")
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return "[analyzer] ANTHROPIC_API_KEY no esta definida."
-
-    client = Anthropic()
-    try:
-        msg = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as e:
-        return (f"[analyzer] fallo la llamada a la API: {e}\n"
-                f"Revisa que HARDEN_MODEL ('{MODEL}') sea un modelo al que tengas acceso.")
-
-    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-
-
-# ---- swap a otro proveedor (ejemplo OpenAI) ----
-# Reemplaza analyze_report(...) por esto si prefieres OpenAI:
-#   from openai import OpenAI
-#   client = OpenAI()
-#   r = client.chat.completions.create(
-#       model=os.environ.get("HARDEN_MODEL", "gpt-4o"),
-#       messages=[{"role": "system", "content": SYSTEM_PROMPT},
-#                 {"role": "user", "content": prompt}])
-#   return r.choices[0].message.content
+    provider = select_provider()
+    if provider == "anthropic":
+        return analyze_with_anthropic(prompt)
+    if provider == "openai":
+        return analyze_with_openai(prompt)
+    return "[analyzer] HARDEN_LLM_PROVIDER debe ser 'anthropic' u 'openai'."

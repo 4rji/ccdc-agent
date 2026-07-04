@@ -19,7 +19,8 @@ never exported — only their status (`set` / `locked` / `EMPTY!`).
 
 ## Requirements
 
-- **Server:** Python 3.9+, `pip`, and an LLM API key (Anthropic by default).
+- **Server:** Python 3.9+, `pip`, and an LLM API key (Anthropic by default,
+  OpenAI also supported).
 - **Agents:** `bash`, `base64`, and `curl` (or `wget`). All standard on Linux.
   Run the agent as **root** for full coverage (shadow status, every user's
   crontab and SSH keys).
@@ -42,10 +43,21 @@ the same directory.
 **2. Start the server:**
 
 ```bash
-pip install fastapi uvicorn anthropic
+pip install fastapi uvicorn anthropic openai
 export HARDEN_TOKEN="a-long-shared-secret"     # agents must send the same token
 export ANTHROPIC_API_KEY="sk-ant-..."
 export HARDEN_MODEL="claude-sonnet-4-5"        # set to a model you can access
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+To use OpenAI instead:
+
+```bash
+pip install fastapi uvicorn openai
+export HARDEN_TOKEN="a-long-shared-secret"
+export HARDEN_LLM_PROVIDER="openai"
+export OPENAI_API_KEY="sk-..."
+export HARDEN_MODEL="gpt-4o"                   # optional; default is gpt-4o
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
@@ -290,8 +302,12 @@ esac
 and shows team progress.
 
 Run:
-    pip install fastapi uvicorn anthropic
+pip install fastapi uvicorn anthropic openai
     HARDEN_TOKEN=secret ANTHROPIC_API_KEY=sk-... \
+        uvicorn server:app --host 0.0.0.0 --port 8000
+
+    # Or use OpenAI:
+    HARDEN_TOKEN=secret HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import os
@@ -592,9 +608,11 @@ sudo systemctl enable --now hardening-agent.timer
 | `HARDEN_TOKEN` | agent + server | `changeme-shared-secret` | Shared token; must match |
 | `HARDEN_FIND_TIMEOUT` | agent | `25` | Per-`find` timeout, seconds |
 | `HARDEN_DATA` | server | `./reports` | Where reports are stored |
-| `HARDEN_MODEL` | analyzer | `claude-sonnet-4-5` | LLM model id (use one you can access) |
+| `HARDEN_LLM_PROVIDER` | analyzer | `anthropic` unless only `OPENAI_API_KEY` is set | `anthropic` or `openai` |
+| `HARDEN_MODEL` | analyzer | `claude-sonnet-4-5` for Anthropic, `gpt-4o` for OpenAI | LLM model id (use one you can access) |
 | `HARDEN_MAX_CHARS` | analyzer | `120000` | Truncate very large reports before sending |
-| `ANTHROPIC_API_KEY` | analyzer | — | Your API key |
+| `ANTHROPIC_API_KEY` | analyzer | — | Anthropic API key |
+| `OPENAI_API_KEY` | analyzer | — | OpenAI API key |
 
 ## Security notes (matters when a red team is active)
 
@@ -609,10 +627,11 @@ sudo systemctl enable --now hardening-agent.timer
 
 ## Changing the LLM provider or output language
 
-`analyzer.py` targets the Anthropic API. To use OpenAI instead, swap the client
-block (a commented example sits at the bottom of the file). The prompts are in
-English, so the diagnosis comes back in English — edit `SYSTEM_PROMPT` /
-`USER_TEMPLATE` in `analyzer.py` if you want another language.
+`analyzer.py` supports Anthropic and OpenAI. Set `HARDEN_LLM_PROVIDER=openai`
+and `OPENAI_API_KEY` for OpenAI; if `OPENAI_API_KEY` is the only LLM key present,
+the analyzer selects OpenAI automatically. The prompts are in English, so the
+diagnosis comes back in English — edit `SYSTEM_PROMPT` / `USER_TEMPLATE` in
+`analyzer.py` if you want another language.
 
 ## Easy extensions
 

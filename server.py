@@ -3,8 +3,12 @@
 con LLM y muestra el avance del equipo.
 
 Correr:
-    pip install fastapi uvicorn anthropic
+    pip install fastapi uvicorn anthropic openai
     HARDEN_TOKEN=secreto ANTHROPIC_API_KEY=sk-... \
+        uvicorn server:app --host 0.0.0.0 --port 8000
+
+    # O usa OpenAI:
+    HARDEN_TOKEN=secreto HARDEN_LLM_PROVIDER=openai OPENAI_API_KEY=sk-... \
         uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import os

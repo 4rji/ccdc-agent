@@ -15,10 +15,21 @@ falto**, **que corre**, y **que se ve comprometido**.
 ## 1. Servidor central
 
 ```bash
-pip install fastapi uvicorn anthropic
+pip install fastapi uvicorn anthropic openai
 export HARDEN_TOKEN="un-secreto-largo"        # mismo token que los agentes
 export ANTHROPIC_API_KEY="sk-ant-..."
 export HARDEN_MODEL="claude-sonnet-4-5"       # pon un modelo al que tengas acceso
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+Para usar OpenAI en vez de Anthropic:
+
+```bash
+pip install fastapi uvicorn openai
+export HARDEN_TOKEN="un-secreto-largo"
+export HARDEN_LLM_PROVIDER="openai"
+export OPENAI_API_KEY="sk-..."
+export HARDEN_MODEL="gpt-4o"                  # opcional; default gpt-4o
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
