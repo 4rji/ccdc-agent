@@ -89,11 +89,15 @@ curl -X POST http://SERVER:8000/analyze/web01
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/report` | Agent submits a report with `X-Auth-Token` |
+| `POST` | `/report` | Agent submits a report with `X-Auth-Token`; the latest report is stored at `<host>.json` and every submission is also archived under `history/<host>/` |
 | `POST` | `/analyze/<host>` | Runs the LLM diagnosis and saves text output |
 | `GET` | `/analysis/<host>` | Shows the saved diagnosis as HTML or text |
 | `GET` | `/analysis/<host>?raw=1` | Returns the saved diagnosis as raw text |
-| `GET` | `/report/<host>` | Returns the decoded raw collection report |
+| `GET` | `/analysis/<host>?format=md` | Downloads the saved diagnosis as a `.md` file |
+| `GET` | `/analysis/<host>?format=pdf` | Downloads the saved diagnosis as a generated PDF |
+| `GET` | `/report/<host>` | Returns the decoded raw collection report (latest submission) |
+| `GET` | `/history/<host>` | Lists every archived report timestamp for a host |
+| `GET` | `/history/<host>/<timestamp>` | Returns the decoded report from that archived submission |
 | `GET` | `/` | Dashboard listing all hosts |
 
 ## Configuration

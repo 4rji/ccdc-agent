@@ -271,6 +271,14 @@ tbody tr:hover {
   gap: 7px;
   flex-wrap: wrap;
 }
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+}
 .button,
 button {
   display: inline-flex;
@@ -635,6 +643,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/report/", a.getReport)
 	mux.HandleFunc("/analyze/", a.analyze)
 	mux.HandleFunc("/analysis/", a.getAnalysis)
+	mux.HandleFunc("/history/", a.getHistory)
 	return mux
 }
 
@@ -665,6 +674,14 @@ func (a *app) reportPath(host string) string {
 
 func (a *app) analysisPath(host string) string {
 	return filepath.Join(a.dataDir, safe(host)+".analysis.txt")
+}
+
+func (a *app) historyDir(host string) string {
+	return filepath.Join(a.dataDir, "history", safe(host))
+}
+
+func (a *app) historyReportPath(host, stamp string) string {
+	return filepath.Join(a.historyDir(host), safe(stamp)+".json")
 }
 
 func wantsHTML(r *http.Request) bool {
@@ -701,8 +718,9 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	receivedAt := time.Now().UTC()
 	payload["_decoded"] = decodeChecks(payload["checks"])
-	payload["_received"] = time.Now().UTC().Format("2006-01-02T15:04:05.999999Z")
+	payload["_received"] = receivedAt.Format("2006-01-02T15:04:05.999999Z")
 	delete(payload, "checks")
 
 	host := stringValue(payload["hostname"], "unknown")
@@ -715,6 +733,14 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 		log.Printf("could not write report host=%s err=%v", host, err)
 		http.Error(w, "could not write report", http.StatusInternalServerError)
 		return
+	}
+
+	historyStamp := receivedAt.Format("20060102T150405.000000Z")
+	historyPath := a.historyReportPath(host, historyStamp)
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0755); err != nil {
+		log.Printf("could not create history dir host=%s err=%v", host, err)
+	} else if err := os.WriteFile(historyPath, data, 0644); err != nil {
+		log.Printf("could not write history report host=%s err=%v", host, err)
 	}
 
 	decoded := decodedMap(payload["_decoded"])
@@ -817,8 +843,17 @@ func (a *app) getAnalysis(w http.ResponseWriter, r *http.Request) {
 	path := a.analysisPath(host)
 	text, err := os.ReadFile(path)
 	raw := r.URL.Query().Has("raw")
+	format := r.URL.Query().Get("format")
 	if err == nil {
 		log.Printf("served analysis host=%s path=%s", host, path)
+		switch format {
+		case "md":
+			writeMarkdownDownload(w, host, string(text))
+			return
+		case "pdf":
+			writePDFDownload(w, host, string(text))
+			return
+		}
 		if raw || !wantsHTML(r) {
 			writePlain(w, http.StatusOK, string(text))
 			return
@@ -836,6 +871,213 @@ func (a *app) getAnalysis(w http.ResponseWriter, r *http.Request) {
 	writeHTML(w, renderMissingAnalysisPage(a, host))
 }
 
+func writeMarkdownDownload(w http.ResponseWriter, host, text string) {
+	filename := safe(host) + "-analysis.md"
+	body := fmt.Sprintf(
+		"# CCDC Hardening Analysis: %s\n\n_Generated %s_\n\n%s\n",
+		host,
+		time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+		text,
+	)
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, body)
+}
+
+func writePDFDownload(w http.ResponseWriter, host, text string) {
+	filename := safe(host) + "-analysis.pdf"
+	title := fmt.Sprintf("CCDC Hardening Analysis: %s", host)
+	pdfBytes := generateAnalysisPDF(title, text)
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
+}
+
+// generateAnalysisPDF renders plain text into a minimal multi-page PDF using
+// only the standard library: a monospace Courier font, word-wrapped lines,
+// and a hand-built PDF object/xref table. No third-party PDF library needed.
+func generateAnalysisPDF(title string, body string) []byte {
+	const pageWidth = 612.0
+	const pageHeight = 792.0
+	const marginX = 50.0
+	const marginTop = 56.0
+	const marginBottom = 50.0
+	const fontSize = 10.0
+	const leading = 14.0
+
+	charWidth := fontSize * 0.6
+	maxChars := int((pageWidth - 2*marginX) / charWidth)
+	if maxChars < 20 {
+		maxChars = 20
+	}
+
+	lines := buildPDFLines(title, body, maxChars)
+
+	linesPerPage := int((pageHeight - marginTop - marginBottom) / leading)
+	if linesPerPage < 1 {
+		linesPerPage = 1
+	}
+
+	var pages [][]string
+	for len(lines) > 0 {
+		n := linesPerPage
+		if n > len(lines) {
+			n = len(lines)
+		}
+		pages = append(pages, lines[:n])
+		lines = lines[n:]
+	}
+	if len(pages) == 0 {
+		pages = [][]string{{}}
+	}
+
+	totalObjects := 3 + len(pages)*2
+	pageObjNums := make([]int, len(pages))
+	contentObjNums := make([]int, len(pages))
+	for i := range pages {
+		pageObjNums[i] = 4 + i*2
+		contentObjNums[i] = 5 + i*2
+	}
+
+	var buf bytes.Buffer
+	offsets := make([]int, totalObjects+1)
+	record := func(objNum int) {
+		offsets[objNum] = buf.Len()
+	}
+
+	buf.WriteString("%PDF-1.4\n")
+
+	record(1)
+	buf.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+
+	record(2)
+	buf.WriteString("2 0 obj\n<< /Type /Pages /Kids [")
+	for i, n := range pageObjNums {
+		if i > 0 {
+			buf.WriteString(" ")
+		}
+		fmt.Fprintf(&buf, "%d 0 R", n)
+	}
+	fmt.Fprintf(&buf, "] /Count %d >>\nendobj\n", len(pages))
+
+	record(3)
+	buf.WriteString("3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n")
+
+	for i, pageLines := range pages {
+		pageObj := pageObjNums[i]
+		contentObj := contentObjNums[i]
+
+		var content bytes.Buffer
+		content.WriteString("BT\n")
+		fmt.Fprintf(&content, "/F1 %.1f Tf\n", fontSize)
+		fmt.Fprintf(&content, "%.1f TL\n", leading)
+		fmt.Fprintf(&content, "%.1f %.1f Td\n", marginX, pageHeight-marginTop)
+		for _, line := range pageLines {
+			fmt.Fprintf(&content, "(%s) Tj T*\n", pdfEscape(line))
+		}
+		content.WriteString("ET\n")
+
+		record(pageObj)
+		fmt.Fprintf(&buf,
+			"%d 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.0f %.0f] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>\nendobj\n",
+			pageObj, pageWidth, pageHeight, contentObj)
+
+		record(contentObj)
+		fmt.Fprintf(&buf, "%d 0 obj\n<< /Length %d >>\nstream\n", contentObj, content.Len())
+		buf.Write(content.Bytes())
+		buf.WriteString("\nendstream\nendobj\n")
+	}
+
+	xrefStart := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n", totalObjects+1)
+	buf.WriteString("0000000000 65535 f \n")
+	for n := 1; n <= totalObjects; n++ {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", offsets[n])
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", totalObjects+1, xrefStart)
+
+	return buf.Bytes()
+}
+
+func buildPDFLines(title string, body string, width int) []string {
+	lines := []string{
+		title,
+		"Generated: " + time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+		"",
+	}
+	for _, raw := range strings.Split(body, "\n") {
+		lines = append(lines, wrapPlainText(raw, width)...)
+	}
+	return lines
+}
+
+func wrapPlainText(line string, width int) []string {
+	if width <= 0 {
+		width = 80
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return []string{""}
+	}
+	var out []string
+	current := ""
+	currentLen := 0
+	for _, word := range fields {
+		wr := []rune(word)
+		for len(wr) > width {
+			if current != "" {
+				out = append(out, current)
+				current = ""
+				currentLen = 0
+			}
+			out = append(out, string(wr[:width]))
+			wr = wr[width:]
+		}
+		wLen := len(wr)
+		switch {
+		case current == "":
+			current = string(wr)
+			currentLen = wLen
+		case currentLen+1+wLen <= width:
+			current += " " + string(wr)
+			currentLen += 1 + wLen
+		default:
+			out = append(out, current)
+			current = string(wr)
+			currentLen = wLen
+		}
+	}
+	if current != "" {
+		out = append(out, current)
+	}
+	return out
+}
+
+// pdfEscape encodes a line for a PDF literal string: backslash/paren
+// escaping plus a best-effort Latin-1 fallback since standard PDF fonts
+// like Courier only cover WinAnsiEncoding, not full UTF-8.
+func pdfEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == '(' || r == ')':
+			b.WriteByte('\\')
+			b.WriteByte(byte(r))
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20:
+			// drop other control characters
+		case r < 0x100:
+			b.WriteByte(byte(r))
+		default:
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
 func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -850,7 +1092,10 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("served report host=%s path=%s", host, path)
+	writePlain(w, http.StatusOK, formatDecodedReport(payload))
+}
 
+func formatDecodedReport(payload map[string]any) string {
 	decoded := decodedMap(payload["_decoded"])
 	var b strings.Builder
 	for _, key := range orderedKeys(decoded) {
@@ -860,7 +1105,103 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(decoded[key])
 		b.WriteString("\n\n")
 	}
-	writePlain(w, http.StatusOK, b.String())
+	return b.String()
+}
+
+// getHistory serves the archive of every report a host has ever submitted.
+// /history/<host> lists timestamps; /history/<host>/<timestamp> replays one.
+func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/history/")
+	parts := strings.SplitN(rest, "/", 2)
+	host := safe(parts[0])
+
+	if len(parts) == 2 && parts[1] != "" {
+		stamp := safe(parts[1])
+		payload, err := readPayload(a.historyReportPath(host, stamp))
+		if err != nil {
+			log.Printf("history entry not found host=%s stamp=%s", host, stamp)
+			http.Error(w, "no history entry", http.StatusNotFound)
+			return
+		}
+		log.Printf("served history entry host=%s stamp=%s", host, stamp)
+		writePlain(w, http.StatusOK, formatDecodedReport(payload))
+		return
+	}
+
+	stamps, err := a.listHistoryStamps(host)
+	if err != nil || len(stamps) == 0 {
+		message := fmt.Sprintf("no report history yet for %s", host)
+		if !wantsHTML(r) {
+			writePlain(w, http.StatusOK, message)
+			return
+		}
+		writeHTML(w, renderMissingAnalysisPage(a, host))
+		return
+	}
+
+	if !wantsHTML(r) {
+		writePlain(w, http.StatusOK, strings.Join(stamps, "\n"))
+		return
+	}
+
+	hostID := html.EscapeString(host)
+	var rows strings.Builder
+	for i := len(stamps) - 1; i >= 0; i-- {
+		stamp := html.EscapeString(stamps[i])
+		rows.WriteString(fmt.Sprintf(
+			"<li><a class='button' href='/history/%s/%s'>%s</a></li>",
+			hostID, stamp, stamp,
+		))
+	}
+	page := fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History - %s</title>
+  <style>%s</style>
+</head>
+<body>
+  <main class="shell">
+    <a class="back-link" href="/">Back to dashboard</a>
+    <h1>Report history: %s</h1>
+    <p>%d stored report%s, most recent first.</p>
+    <ul class="history-list">%s</ul>
+  </main>
+</body>
+</html>`,
+		hostID, dashboardCSS, hostID, len(stamps), pluralSuffix(len(stamps)), rows.String())
+	writeHTML(w, page)
+}
+
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func (a *app) listHistoryStamps(host string) ([]string, error) {
+	entries, err := os.ReadDir(a.historyDir(host))
+	if err != nil {
+		return nil, err
+	}
+	var stamps []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".json") {
+			stamps = append(stamps, strings.TrimSuffix(name, ".json"))
+		}
+	}
+	sort.Strings(stamps)
+	return stamps, nil
 }
 
 func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -915,6 +1256,7 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		rows.WriteString(fmt.Sprintf("<td>%d</td>", report.sections))
 		rows.WriteString("<td><div class='actions'>")
 		rows.WriteString(fmt.Sprintf("<a class='button' href='/report/%s'>Report</a>", hostID))
+		rows.WriteString(fmt.Sprintf("<a class='button' href='/history/%s'>History</a>", hostID))
 		rows.WriteString(fmt.Sprintf("<a class='button' href='/analysis/%s'>Analysis</a>", hostID))
 		rows.WriteString(fmt.Sprintf("<form method='post' action='/analyze/%s'>", hostID))
 		rows.WriteString("<button class='primary' type='submit'>Run</button></form>")
@@ -1552,7 +1894,10 @@ func renderAnalysisPage(a *app, host string, text string) string {
       </div>
       <div class="runtime" aria-label="Analysis links">
         <a class="button" href="/report/%s">Report</a>
+        <a class="button" href="/history/%s">History</a>
         <a class="button" href="/analysis/%s?raw=1">Raw Text</a>
+        <a class="button" href="/analysis/%s?format=pdf">Download PDF</a>
+        <a class="button" href="/analysis/%s?format=md">Download .md</a>
       </div>
     </header>
 
@@ -1585,6 +1930,8 @@ func renderAnalysisPage(a *app, host string, text string) string {
             <button class="primary" type="submit">Run Again</button>
           </form>
           <a class="button" href="/analysis/%s?raw=1">View Raw Analysis</a>
+          <a class="button" href="/analysis/%s?format=pdf">Download PDF</a>
+          <a class="button" href="/analysis/%s?format=md">Download .md</a>
         </div>
       </aside>
     </section>
@@ -1596,6 +1943,9 @@ func renderAnalysisPage(a *app, host string, text string) string {
 		displayHost,
 		hostID,
 		hostID,
+		hostID,
+		hostID,
+		hostID,
 		html.EscapeString(scoreClass),
 		html.EscapeString(scoreValue),
 		html.EscapeString(scoreLabel),
@@ -1604,6 +1954,8 @@ func renderAnalysisPage(a *app, host string, text string) string {
 		cards.String(),
 		displayHost,
 		sideRows.String(),
+		hostID,
+		hostID,
 		hostID,
 		hostID,
 	)
