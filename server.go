@@ -25,6 +25,9 @@ const (
 	defaultDataDir      = "./reports"
 	defaultListenAddr   = ":8000"
 	maxReportBytes      = 64 << 20
+	historyStampLayout  = "20060102T150405.000000Z"
+	receivedLayout      = "2006-01-02T15:04:05.999999Z"
+	displayTimeLayout   = "2006-01-02 15:04:05 UTC"
 )
 
 var checkOrder = []string{
@@ -270,14 +273,6 @@ tbody tr:hover {
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-}
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-  margin: 16px 0 0;
-  padding: 0;
 }
 .button,
 button {
@@ -551,6 +546,15 @@ button:hover {
   max-width: 560px;
   color: var(--muted);
 }
+.report-pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
 @media (max-width: 760px) {
   .shell {
     width: min(100% - 20px, 1180px);
@@ -720,7 +724,7 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 
 	receivedAt := time.Now().UTC()
 	payload["_decoded"] = decodeChecks(payload["checks"])
-	payload["_received"] = receivedAt.Format("2006-01-02T15:04:05.999999Z")
+	payload["_received"] = receivedAt.Format(receivedLayout)
 	delete(payload, "checks")
 
 	host := stringValue(payload["hostname"], "unknown")
@@ -735,7 +739,7 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	historyStamp := receivedAt.Format("20060102T150405.000000Z")
+	historyStamp := receivedAt.Format(historyStampLayout)
 	historyPath := a.historyReportPath(host, historyStamp)
 	if err := os.MkdirAll(filepath.Dir(historyPath), 0755); err != nil {
 		log.Printf("could not create history dir host=%s err=%v", host, err)
@@ -1085,14 +1089,34 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 	host := routeHost(r.URL.Path, "/report/")
 	path := a.reportPath(host)
+	raw := r.URL.Query().Has("raw")
 	payload, err := readPayload(path)
 	if err != nil {
+		if fileExists(path) {
+			log.Printf("report unreadable host=%s path=%s err=%v", host, path, err)
+			if wantsHTML(r) && !raw {
+				writeHTML(w, renderMessagePage(
+					"Report unreadable: "+host,
+					"The stored report file exists but is not valid JSON.",
+					"<a class='button' href='/'>Back to Dashboard</a>",
+				))
+				return
+			}
+			writePlain(w, http.StatusOK, "report exists but is not valid JSON")
+			return
+		}
 		log.Printf("report not found host=%s path=%s", host, path)
 		http.Error(w, "no report", http.StatusNotFound)
 		return
 	}
 	log.Printf("served report host=%s path=%s", host, path)
-	writePlain(w, http.StatusOK, formatDecodedReport(payload))
+	text := formatDecodedReport(payload)
+	if raw || !wantsHTML(r) {
+		writePlain(w, http.StatusOK, text)
+		return
+	}
+	dateLabel := "Current report - " + formatReceived(stringValue(payload["_received"], "?"))
+	writeHTML(w, renderReportPage(host, dateLabel, text, "/report/"+safe(host)+"?raw=1"))
 }
 
 func formatDecodedReport(payload map[string]any) string {
@@ -1108,6 +1132,147 @@ func formatDecodedReport(payload map[string]any) string {
 	return b.String()
 }
 
+// formatStamp turns a history filename stamp into a readable date; on parse
+// failure the raw stamp is still usable as a label.
+func formatStamp(stamp string) string {
+	t, err := time.Parse(historyStampLayout, stamp)
+	if err != nil {
+		return stamp
+	}
+	return t.Format(displayTimeLayout)
+}
+
+func formatReceived(value string) string {
+	t, err := time.Parse(receivedLayout, value)
+	if err != nil {
+		return value
+	}
+	return t.Format(displayTimeLayout)
+}
+
+func countLines(text string) int {
+	trimmed := strings.TrimRight(text, "\n")
+	if trimmed == "" {
+		return 0
+	}
+	return strings.Count(trimmed, "\n") + 1
+}
+
+func countReportLines(payload map[string]any) int {
+	return countLines(formatDecodedReport(payload))
+}
+
+type historyEntry struct {
+	date     string
+	badge    string // "Current" for the live report, "" for snapshots
+	href     string
+	lines    int
+	readable bool
+}
+
+// buildHistoryEntries lists the live report first, then snapshots newest-first.
+func (a *app) buildHistoryEntries(host string, stamps []string) []historyEntry {
+	hostID := safe(host)
+	var entries []historyEntry
+	if payload, err := readPayload(a.reportPath(host)); err == nil {
+		entries = append(entries, historyEntry{
+			date:     formatReceived(stringValue(payload["_received"], "?")),
+			badge:    "Current",
+			href:     "/report/" + hostID,
+			lines:    countReportLines(payload),
+			readable: true,
+		})
+	} else if fileExists(a.reportPath(host)) {
+		entries = append(entries, historyEntry{
+			date:  "current report",
+			badge: "Current",
+			href:  "/report/" + hostID,
+		})
+	}
+	for i := len(stamps) - 1; i >= 0; i-- {
+		stamp := stamps[i]
+		entry := historyEntry{
+			date: formatStamp(stamp),
+			href: fmt.Sprintf("/history/%s/%s", hostID, stamp),
+		}
+		if payload, err := readPayload(a.historyReportPath(host, stamp)); err == nil {
+			entry.lines = countReportLines(payload)
+			entry.readable = true
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func renderHistoryPage(host string, entries []historyEntry) string {
+	displayHost := html.EscapeString(host)
+	hostID := html.EscapeString(safe(host))
+	var rows strings.Builder
+	for _, entry := range entries {
+		badge := ""
+		if entry.badge != "" {
+			badge = fmt.Sprintf(" <span class='badge ok'>%s</span>", html.EscapeString(entry.badge))
+		}
+		linesText := "unreadable"
+		if entry.readable {
+			linesText = strconv.Itoa(entry.lines)
+		}
+		rows.WriteString(fmt.Sprintf(
+			"<tr><td>%s%s</td><td>%s</td><td><div class='actions'><a class='button' href='%s'>View report</a></div></td></tr>",
+			html.EscapeString(entry.date),
+			badge,
+			html.EscapeString(linesText),
+			entry.href,
+		))
+	}
+	return fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History - %s</title>
+  <style>%s</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar analysis-top">
+      <div>
+        <a class="back-link" href="/">Back to dashboard</a>
+        <p class="eyebrow">Report Archive</p>
+        <h1>History: %s</h1>
+      </div>
+      <div class="runtime" aria-label="History links">
+        <a class="button" href="/report/%s">Current Report</a>
+        <a class="button" href="/analysis/%s">Analysis</a>
+      </div>
+    </header>
+    <section class="table-panel" aria-label="Stored reports">
+      <div class="table-heading">
+        <h2>Stored Reports</h2>
+        <span>%d total</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Lines</th><th>Actions</th></tr>
+          </thead>
+          <tbody>%s</tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>`,
+		displayHost,
+		dashboardCSS,
+		displayHost,
+		hostID,
+		hostID,
+		len(entries),
+		rows.String(),
+	)
+}
+
 // getHistory serves the archive of every report a host has ever submitted.
 // /history/<host> lists timestamps; /history/<host>/<timestamp> replays one.
 func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
@@ -1121,25 +1286,53 @@ func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 2 && parts[1] != "" {
 		stamp := safe(parts[1])
-		payload, err := readPayload(a.historyReportPath(host, stamp))
+		path := a.historyReportPath(host, stamp)
+		raw := r.URL.Query().Has("raw")
+		payload, err := readPayload(path)
 		if err != nil {
+			if fileExists(path) {
+				log.Printf("history entry unreadable host=%s stamp=%s err=%v", host, stamp, err)
+				if wantsHTML(r) && !raw {
+					writeHTML(w, renderMessagePage(
+						"Snapshot unreadable",
+						"This history snapshot exists but is not valid JSON.",
+						fmt.Sprintf("<a class='button' href='/history/%s'>Back to History</a>", html.EscapeString(host)),
+					))
+					return
+				}
+				writePlain(w, http.StatusOK, "history entry exists but is not valid JSON")
+				return
+			}
 			log.Printf("history entry not found host=%s stamp=%s", host, stamp)
 			http.Error(w, "no history entry", http.StatusNotFound)
 			return
 		}
 		log.Printf("served history entry host=%s stamp=%s", host, stamp)
-		writePlain(w, http.StatusOK, formatDecodedReport(payload))
+		text := formatDecodedReport(payload)
+		if raw || !wantsHTML(r) {
+			writePlain(w, http.StatusOK, text)
+			return
+		}
+		dateLabel := "Snapshot - " + formatStamp(stamp)
+		writeHTML(w, renderReportPage(host, dateLabel, text, fmt.Sprintf("/history/%s/%s?raw=1", safe(host), stamp)))
 		return
 	}
 
 	stamps, err := a.listHistoryStamps(host)
 	if err != nil || len(stamps) == 0 {
-		message := fmt.Sprintf("no report history yet for %s", host)
 		if !wantsHTML(r) {
-			writePlain(w, http.StatusOK, message)
+			writePlain(w, http.StatusOK, fmt.Sprintf("no report history yet for %s", host))
 			return
 		}
-		writeHTML(w, renderMissingAnalysisPage(a, host))
+		actions := "<a class='button' href='/'>Back to Dashboard</a>"
+		if fileExists(a.reportPath(host)) {
+			actions = fmt.Sprintf("<a class='button' href='/report/%s'>View Current Report</a> %s", html.EscapeString(safe(host)), actions)
+		}
+		writeHTML(w, renderMessagePage(
+			"No history for "+host,
+			"No history snapshots have been stored for this host yet. Snapshots are archived every time the agent submits a report.",
+			actions,
+		))
 		return
 	}
 
@@ -1148,34 +1341,7 @@ func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hostID := html.EscapeString(host)
-	var rows strings.Builder
-	for i := len(stamps) - 1; i >= 0; i-- {
-		stamp := html.EscapeString(stamps[i])
-		rows.WriteString(fmt.Sprintf(
-			"<li><a class='button' href='/history/%s/%s'>%s</a></li>",
-			hostID, stamp, stamp,
-		))
-	}
-	page := fmt.Sprintf(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>History - %s</title>
-  <style>%s</style>
-</head>
-<body>
-  <main class="shell">
-    <a class="back-link" href="/">Back to dashboard</a>
-    <h1>Report history: %s</h1>
-    <p>%d stored report%s, most recent first.</p>
-    <ul class="history-list">%s</ul>
-  </main>
-</body>
-</html>`,
-		hostID, dashboardCSS, hostID, len(stamps), pluralSuffix(len(stamps)), rows.String())
-	writeHTML(w, page)
+	writeHTML(w, renderHistoryPage(host, a.buildHistoryEntries(host, stamps)))
 }
 
 func pluralSuffix(n int) string {
@@ -1808,6 +1974,89 @@ func renderMissingAnalysisPage(a *app, host string) string {
   </main>
 </body>
 </html>`, hostID, dashboardCSS, hostID, html.EscapeString(message), action)
+}
+
+// renderMessagePage is the chrome for states with nothing to show: empty
+// history, corrupt files. actionsHTML is trusted pre-built markup.
+func renderMessagePage(title, message, actionsHTML string) string {
+	return fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>%s</title>
+  <style>%s</style>
+</head>
+<body>
+  <main class="shell">
+    <a class="back-link" href="/">Back to dashboard</a>
+    <section class="empty-panel">
+      <h2>%s</h2>
+      <p>%s</p>
+      <div class="actions" style="justify-content:center">%s</div>
+    </section>
+  </main>
+</body>
+</html>`,
+		html.EscapeString(title),
+		dashboardCSS,
+		html.EscapeString(title),
+		html.EscapeString(message),
+		actionsHTML,
+	)
+}
+
+// renderReportPage wraps a decoded report in the dashboard chrome. rawHref
+// serves the same text as plain text (?raw=1).
+func renderReportPage(host, dateLabel, text, rawHref string) string {
+	hostID := html.EscapeString(safe(host))
+	displayHost := html.EscapeString(host)
+	lines := countLines(text)
+	return fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Report - %s</title>
+  <style>%s</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar analysis-top">
+      <div>
+        <a class="back-link" href="/history/%s">Back to history</a>
+        <p class="eyebrow">Raw Report</p>
+        <h1>Report: %s</h1>
+      </div>
+      <div class="runtime" aria-label="Report links">
+        <a class="button" href="/">Dashboard</a>
+        <a class="button" href="%s">Plain text</a>
+        <a class="button" href="/history/%s">History</a>
+        <a class="button" href="/analysis/%s">Analysis</a>
+      </div>
+    </header>
+    <section class="table-panel" aria-label="Decoded report">
+      <div class="table-heading">
+        <h2>%s</h2>
+        <span>%d line%s</span>
+      </div>
+      <pre class="report-pre">%s</pre>
+    </section>
+  </main>
+</body>
+</html>`,
+		displayHost,
+		dashboardCSS,
+		hostID,
+		displayHost,
+		html.EscapeString(rawHref),
+		hostID,
+		hostID,
+		html.EscapeString(dateLabel),
+		lines,
+		pluralSuffix(lines),
+		html.EscapeString(text),
+	)
 }
 
 func renderAnalysisPage(a *app, host string, text string) string {

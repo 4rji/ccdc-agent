@@ -509,6 +509,15 @@ button:hover {
   max-width: 560px;
   color: var(--muted);
 }
+.report-pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
 @media (max-width: 760px) {
   .shell {
     width: min(100% - 20px, 1180px);
@@ -574,6 +583,57 @@ def report_path(host):
 
 def analysis_path(host):
     return DATA_DIR / f"{safe(host)}.analysis.txt"
+
+
+HISTORY_STAMP_FORMAT = "%Y%m%dT%H%M%S.%fZ"
+DISPLAY_TIME_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
+
+
+def history_dir(host):
+    return DATA_DIR / "history" / safe(host)
+
+
+def history_report_path(host, stamp):
+    return history_dir(host) / f"{safe(stamp)}.json"
+
+
+def list_history_stamps(host) -> list:
+    hdir = history_dir(host)
+    if not hdir.is_dir():
+        return []
+    return sorted(p.stem for p in hdir.glob("*.json"))
+
+
+def format_stamp(stamp: str) -> str:
+    try:
+        return datetime.datetime.strptime(stamp, HISTORY_STAMP_FORMAT).strftime(DISPLAY_TIME_FORMAT)
+    except ValueError:
+        return stamp
+
+
+def format_received(value: str) -> str:
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.datetime.strptime(value, fmt).strftime(DISPLAY_TIME_FORMAT)
+        except ValueError:
+            continue
+    return value
+
+
+def format_decoded_report(payload: dict) -> str:
+    decoded = payload.get("_decoded", {})
+    return "\n".join(f"===== {k.upper()} =====\n{v}\n" for k, v in decoded.items())
+
+
+def count_lines(text: str) -> int:
+    stripped = text.rstrip("\n")
+    if not stripped:
+        return 0
+    return stripped.count("\n") + 1
+
+
+def count_report_lines(payload: dict) -> int:
+    return count_lines(format_decoded_report(payload))
 
 
 def wants_html(request: Request) -> bool:
@@ -813,6 +873,164 @@ def render_missing_analysis_page(host: str) -> str:
 </html>"""
 
 
+def render_message_page(title: str, message: str, actions_html: str) -> str:
+    safe_title = html.escape(title)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <style>{DASHBOARD_CSS}</style>
+</head>
+<body>
+  <main class="shell">
+    <a class="back-link" href="/">Back to dashboard</a>
+    <section class="empty-panel">
+      <h2>{safe_title}</h2>
+      <p>{html.escape(message)}</p>
+      <div class="actions" style="justify-content:center">{actions_html}</div>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def render_report_page(host: str, date_label: str, text: str, raw_href: str) -> str:
+    host_id = html.escape(safe(host))
+    display_host = html.escape(host)
+    lines = count_lines(text)
+    plural = "" if lines == 1 else "s"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Report - {display_host}</title>
+  <style>{DASHBOARD_CSS}</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar analysis-top">
+      <div>
+        <a class="back-link" href="/history/{host_id}">Back to history</a>
+        <p class="eyebrow">Raw Report</p>
+        <h1>Report: {display_host}</h1>
+      </div>
+      <div class="runtime" aria-label="Report links">
+        <a class="button" href="/">Dashboard</a>
+        <a class="button" href="{html.escape(raw_href)}">Plain text</a>
+        <a class="button" href="/history/{host_id}">History</a>
+        <a class="button" href="/analysis/{host_id}">Analysis</a>
+      </div>
+    </header>
+    <section class="table-panel" aria-label="Decoded report">
+      <div class="table-heading">
+        <h2>{html.escape(date_label)}</h2>
+        <span>{lines} line{plural}</span>
+      </div>
+      <pre class="report-pre">{html.escape(text)}</pre>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def build_history_entries(host: str, stamps: list) -> list:
+    host_id = safe(host)
+    entries = []
+    current = report_path(host)
+    if current.exists():
+        try:
+            payload = json.loads(current.read_text())
+            entries.append({
+                "date": format_received(payload.get("_received", "?")),
+                "badge": "Current",
+                "href": f"/report/{host_id}",
+                "lines": count_report_lines(payload),
+                "readable": True,
+            })
+        except ValueError:
+            entries.append({
+                "date": "current report",
+                "badge": "Current",
+                "href": f"/report/{host_id}",
+                "lines": 0,
+                "readable": False,
+            })
+    for stamp in reversed(stamps):
+        entry = {
+            "date": format_stamp(stamp),
+            "badge": "",
+            "href": f"/history/{host_id}/{stamp}",
+            "lines": 0,
+            "readable": False,
+        }
+        try:
+            payload = json.loads(history_report_path(host, stamp).read_text())
+            entry["lines"] = count_report_lines(payload)
+            entry["readable"] = True
+        except (OSError, ValueError):
+            pass
+        entries.append(entry)
+    return entries
+
+
+def render_history_page(host: str, entries: list) -> str:
+    display_host = html.escape(host)
+    host_id = html.escape(safe(host))
+    rows = []
+    for entry in entries:
+        badge = ""
+        if entry["badge"]:
+            badge = f" <span class='badge ok'>{html.escape(entry['badge'])}</span>"
+        lines_text = str(entry["lines"]) if entry["readable"] else "unreadable"
+        rows.append(
+            f"<tr><td>{html.escape(entry['date'])}{badge}</td>"
+            f"<td>{html.escape(lines_text)}</td>"
+            f"<td><div class='actions'><a class='button' href='{entry['href']}'>View report</a></div></td></tr>"
+        )
+    body = "".join(rows)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History - {display_host}</title>
+  <style>{DASHBOARD_CSS}</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar analysis-top">
+      <div>
+        <a class="back-link" href="/">Back to dashboard</a>
+        <p class="eyebrow">Report Archive</p>
+        <h1>History: {display_host}</h1>
+      </div>
+      <div class="runtime" aria-label="History links">
+        <a class="button" href="/report/{host_id}">Current Report</a>
+        <a class="button" href="/analysis/{host_id}">Analysis</a>
+      </div>
+    </header>
+    <section class="table-panel" aria-label="Stored reports">
+      <div class="table-heading">
+        <h2>Stored Reports</h2>
+        <span>{len(entries)} total</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Lines</th><th>Actions</th></tr>
+          </thead>
+          <tbody>{body}</tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
 def render_analysis_page(host: str, text: str) -> str:
     metadata = load_report_metadata(host)
     display_host = html.escape(metadata.get("host", host))
@@ -964,13 +1182,22 @@ async def receive_report(request: Request, x_auth_token: str = Header(default=""
         )
         raise HTTPException(status_code=401, detail="bad token")
     payload = await request.json()
+    received = datetime.datetime.utcnow()
     payload["_decoded"] = decode_checks(payload.get("checks", {}))
-    payload["_received"] = datetime.datetime.utcnow().isoformat() + "Z"
+    payload["_received"] = received.isoformat() + "Z"
     payload.pop("checks", None)  # discard the base64 blob, keep the decoded data
     host = payload.get("hostname", "unknown")
     decoded = payload.get("_decoded", {})
     path = report_path(host)
-    path.write_text(json.dumps(payload, indent=2))
+    data = json.dumps(payload, indent=2)
+    path.write_text(data)
+    stamp = received.strftime(HISTORY_STAMP_FORMAT)
+    try:
+        hdir = history_dir(host)
+        hdir.mkdir(parents=True, exist_ok=True)
+        (hdir / f"{stamp}.json").write_text(data)
+    except OSError as exc:
+        logger.warning("could not write history report host=%s err=%s", host, exc)
     logger.info(
         "received report host=%s from=%s collected_as=%s sections=%s path=%s",
         host,
@@ -1026,15 +1253,77 @@ def get_analysis(host: str, request: Request, raw: str = ""):
     return HTMLResponse(render_missing_analysis_page(host))
 
 
-@app.get("/report/{host}", response_class=PlainTextResponse)
-def get_report(host: str):
+@app.get("/report/{host}")
+def get_report(host: str, request: Request, raw: str = ""):
     p = report_path(host)
     if not p.exists():
         logger.warning("report not found host=%s path=%s", host, p)
         raise HTTPException(404, "no report")
+    try:
+        payload = json.loads(p.read_text())
+    except ValueError:
+        logger.warning("report unreadable host=%s path=%s", host, p)
+        if wants_html(request) and not raw:
+            return HTMLResponse(render_message_page(
+                f"Report unreadable: {host}",
+                "The stored report file exists but is not valid JSON.",
+                "<a class='button' href='/'>Back to Dashboard</a>",
+            ))
+        return PlainTextResponse("report exists but is not valid JSON")
     logger.info("served report host=%s path=%s", host, p)
-    dec = json.loads(p.read_text()).get("_decoded", {})
-    return "\n".join(f"===== {k.upper()} =====\n{v}\n" for k, v in dec.items())
+    text = format_decoded_report(payload)
+    if raw or not wants_html(request):
+        return PlainTextResponse(text)
+    date_label = "Current report - " + format_received(payload.get("_received", "?"))
+    return HTMLResponse(render_report_page(host, date_label, text, f"/report/{safe(host)}?raw=1"))
+
+
+@app.get("/history/{host}")
+def get_history(host: str, request: Request):
+    stamps = list_history_stamps(host)
+    if not stamps:
+        if not wants_html(request):
+            return PlainTextResponse(f"no report history yet for {host}")
+        actions = "<a class='button' href='/'>Back to Dashboard</a>"
+        if report_path(host).exists():
+            actions = (
+                f"<a class='button' href='/report/{html.escape(safe(host))}'>View Current Report</a> "
+                + actions
+            )
+        return HTMLResponse(render_message_page(
+            f"No history for {host}",
+            "No history snapshots have been stored for this host yet. "
+            "Snapshots are archived every time the agent submits a report.",
+            actions,
+        ))
+    if not wants_html(request):
+        return PlainTextResponse("\n".join(stamps))
+    return HTMLResponse(render_history_page(host, build_history_entries(host, stamps)))
+
+
+@app.get("/history/{host}/{stamp}")
+def get_history_entry(host: str, stamp: str, request: Request, raw: str = ""):
+    path = history_report_path(host, stamp)
+    if not path.exists():
+        logger.warning("history entry not found host=%s stamp=%s", host, stamp)
+        raise HTTPException(404, "no history entry")
+    try:
+        payload = json.loads(path.read_text())
+    except ValueError:
+        logger.warning("history entry unreadable host=%s stamp=%s", host, stamp)
+        if wants_html(request) and not raw:
+            return HTMLResponse(render_message_page(
+                "Snapshot unreadable",
+                "This history snapshot exists but is not valid JSON.",
+                f"<a class='button' href='/history/{html.escape(safe(host))}'>Back to History</a>",
+            ))
+        return PlainTextResponse("history entry exists but is not valid JSON")
+    logger.info("served history entry host=%s stamp=%s", host, stamp)
+    text = format_decoded_report(payload)
+    if raw or not wants_html(request):
+        return PlainTextResponse(text)
+    date_label = "Snapshot - " + format_stamp(safe(stamp))
+    return HTMLResponse(render_report_page(host, date_label, text, f"/history/{safe(host)}/{safe(stamp)}?raw=1"))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1067,6 +1356,7 @@ def dashboard():
             f"<td>{sections}</td>"
             "<td><div class='actions'>"
             f"<a class='button' href='/report/{host_id}'>Report</a>"
+            f"<a class='button' href='/history/{host_id}'>History</a>"
             f"<a class='button' href='/analysis/{host_id}'>Analysis</a>"
             f"<form method='post' action='/analyze/{host_id}'>"
             "<button class='primary' type='submit'>Run</button></form>"
