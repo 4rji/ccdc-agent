@@ -33,6 +33,7 @@ pip install anthropic openai
 ```text
 hardening_agent.sh   # Linux collector: collects state + phones home
 server.go            # Go HTTP server: receives reports, dashboard, analysis routes
+pdf.go               # Styled, multipage PDF analysis renderer
 dashboard.css        # Dashboard/report/history styles embedded into the Go binary
 analyzer.py          # LLM prompt builder and Anthropic/OpenAI client wrapper
 server.py            # legacy FastAPI server kept for compatibility
@@ -86,6 +87,9 @@ so a compromised collector cannot authenticate as an operator.
 - Analysis state is `pending`, `current`, `stale`, or `failed`. An existing
   analysis becomes stale when a newer report is stored, and the dashboard and
   analysis page offer to refresh it.
+- PDF downloads use the dashboard palette and render the score, executive
+  summary, metadata, findings, tables, commands, continuations, and page footers
+  as a structured operational report.
 
 Run the agent on each host as root for full coverage:
 

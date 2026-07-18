@@ -70,6 +70,9 @@ comprometido no tenga acceso de operador.
 - Un analisis puede estar pendiente, vigente, obsoleto (`stale`) o fallido. Si
   llega un reporte mas nuevo, el analisis guardado se marca obsoleto y la
   interfaz permite actualizarlo.
+- La descarga PDF usa la paleta del dashboard y presenta score, resumen,
+  metadatos, hallazgos, tablas, comandos, continuaciones y pies de pagina como
+  un informe operativo estructurado.
 
 ### API HTTP
 
