@@ -148,6 +148,8 @@ Correr como root da mejor cobertura: `/etc/shadow`, crontabs de usuarios y
 | `HARDEN_LLM_PROVIDER` | `anthropic` | `anthropic` u `openai` |
 | `HARDEN_MODEL` | depende del proveedor | Modelo LLM |
 | `HARDEN_MAX_CHARS` | `120000` | Limite de caracteres enviados a la LLM |
+| `HARDEN_MAX_OUTPUT_TOKENS` | `16384` | Presupuesto maximo del analisis, incluidos tokens de razonamiento de OpenAI |
+| `HARDEN_REASONING_EFFORT` | `low` | Esfuerzo de razonamiento usado por modelos GPT-5 |
 
 ## 4. Automatizar el agente
 

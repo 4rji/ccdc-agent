@@ -8,6 +8,8 @@ DEFAULT_MODELS = {
     "openai": "gpt-5-mini",
 }
 MAX_REPORT_CHARS = int(os.environ.get("HARDEN_MAX_CHARS", "120000"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("HARDEN_MAX_OUTPUT_TOKENS", "16384"))
+OPENAI_REASONING_EFFORT = os.environ.get("HARDEN_REASONING_EFFORT", "low").strip().lower()
 
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a senior blue-team operator auditing ONE host during a CCDC-style
@@ -109,20 +111,35 @@ def analyze_with_openai(prompt: str) -> str:
 
     model = model_for("openai")
     client = OpenAI()
+    instruction_role = "developer" if model.startswith("gpt-5") else "system"
+    request = {
+        "model": model,
+        "max_completion_tokens": MAX_OUTPUT_TOKENS,
+        "messages": [
+            {"role": instruction_role, "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    if model.startswith("gpt-5"):
+        request["reasoning_effort"] = OPENAI_REASONING_EFFORT
     try:
-        r = client.chat.completions.create(
-            model=model,
-            max_completion_tokens=4096,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        r = client.chat.completions.create(**request)
     except Exception as e:
         return (f"[analyzer] OpenAI call failed: {e}\n"
                 f"Check that HARDEN_MODEL ('{model}') is a model you can access.")
 
-    return r.choices[0].message.content or ""
+    choice = r.choices[0]
+    content = choice.message.content or ""
+    if content.strip():
+        return content
+
+    finish_reason = getattr(choice, "finish_reason", "unknown")
+    completion_details = getattr(getattr(r, "usage", None),
+                                 "completion_tokens_details", None)
+    reasoning_tokens = getattr(completion_details, "reasoning_tokens", "unknown")
+    return ("[analyzer] OpenAI returned no visible analysis "
+            f"(finish_reason={finish_reason}, reasoning_tokens={reasoning_tokens}). "
+            "Retry the analysis or increase HARDEN_MAX_OUTPUT_TOKENS.")
 
 
 def analyze_report(payload: dict) -> str:

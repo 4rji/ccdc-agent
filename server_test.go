@@ -520,6 +520,7 @@ func TestAnalysisState(t *testing.T) {
 		{name: "ready", content: "1. HARDENING SCORE: 80/100", analysisMod: base.Add(time.Minute), reportMod: base, want: "ready", writeAnalysis: true},
 		{name: "stale", content: "1. HARDENING SCORE: 80/100", analysisMod: base, reportMod: base.Add(time.Minute), want: "stale", writeAnalysis: true},
 		{name: "failed", content: "[analyzer] Python analyzer failed: timeout", analysisMod: base.Add(time.Minute), reportMod: base, want: "failed", writeAnalysis: true},
+		{name: "empty", content: "", analysisMod: base.Add(time.Minute), reportMod: base, want: "failed", writeAnalysis: true},
 	}
 
 	for _, tt := range tests {
@@ -553,6 +554,17 @@ func TestMissingAnalysisReturns404InPlainAndHTML(t *testing.T) {
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("accept %q: status=%d, want 404 body=%s", accept, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+func TestEmptyAnalysisPageExplainsFailure(t *testing.T) {
+	a := testApp(t)
+	body := renderAnalysisPage(a, "web01", "")
+	if !strings.Contains(body, "The stored analysis is empty") {
+		t.Fatal("empty analysis page does not explain the failure")
+	}
+	if strings.Contains(body, "No detail was returned for this section") {
+		t.Fatal("empty analysis page still renders the generic missing-detail message")
 	}
 }
 
@@ -715,6 +727,30 @@ func TestAnalyzeFailureReturnsGatewayErrorAndRecordsFailedState(t *testing.T) {
 	}
 	if got := a.analysisState("web01", time.Time{}); got != "failed" {
 		t.Fatalf("analysis state = %q, want failed", got)
+	}
+}
+
+func TestAnalyzeEmptyResponseRecordsFailedState(t *testing.T) {
+	a := testApp(t)
+	writeReportFile(t, a, "web01", map[string]any{
+		"hostname": "web01",
+		"_decoded": map[string]any{"system": "kernel"},
+	})
+	a.analyzer = func([]byte) (string, error) {
+		return "", nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/analyze/web01", nil)
+	rr := httptest.NewRecorder()
+	a.analyze(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if got := a.analysisState("web01", time.Time{}); got != "failed" {
+		t.Fatalf("analysis state = %q, want failed", got)
+	}
+	if !strings.Contains(rr.Body.String(), "empty response") {
+		t.Fatalf("body does not explain empty response: %s", rr.Body.String())
 	}
 }
 

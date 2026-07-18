@@ -845,6 +845,8 @@ func (a *app) analyze(w http.ResponseWriter, r *http.Request) {
 	result, analyzerErr := a.analyzer(reportData)
 	if analyzerErr != nil {
 		result = fmt.Sprintf("[analyzer] Python analyzer failed: %v", analyzerErr)
+	} else if strings.TrimSpace(result) == "" {
+		result = "[analyzer] The analyzer returned an empty response. Retry the analysis."
 	}
 
 	// The analyzer can run for minutes. Do not let a result based on an older
@@ -2063,7 +2065,8 @@ func (a *app) analysisState(host string, reportModTime time.Time) string {
 		return "pending"
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || strings.HasPrefix(strings.TrimSpace(string(data)), "[analyzer]") {
+	text := strings.TrimSpace(string(data))
+	if err != nil || text == "" || strings.HasPrefix(text, "[analyzer]") {
 		return "failed"
 	}
 	if !reportModTime.IsZero() && info.ModTime().Before(reportModTime) {
@@ -2698,6 +2701,9 @@ func renderAnalysisPage(a *app, host string, text string) string {
 }
 
 func renderAnalysisPageForStamp(a *app, host, stamp, text string) string {
+	if strings.TrimSpace(text) == "" {
+		text = "[analyzer] The stored analysis is empty. No findings were returned."
+	}
 	reportPath := a.reportPath(host)
 	reportHref := "/report/" + safe(host)
 	analysisHref := "/analysis/" + safe(host)

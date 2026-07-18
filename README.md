@@ -168,6 +168,8 @@ curl -H "X-Auth-Token: $HARDEN_UI_TOKEN" -H 'Accept: text/html' 'http://SERVER:8
 | `HARDEN_LLM_PROVIDER` | analyzer | `anthropic` unless only `OPENAI_API_KEY` is set | `anthropic` or `openai` |
 | `HARDEN_MODEL` | analyzer | `claude-sonnet-4-5` for Anthropic, `gpt-5-mini` for OpenAI | LLM model id |
 | `HARDEN_MAX_CHARS` | analyzer | `120000` | Truncate very large reports before sending to the LLM |
+| `HARDEN_MAX_OUTPUT_TOKENS` | analyzer | `16384` | Maximum analysis output budget, including OpenAI reasoning tokens |
+| `HARDEN_REASONING_EFFORT` | analyzer | `low` | Reasoning effort used by GPT-5 models |
 | `ANTHROPIC_API_KEY` | analyzer | unset | Anthropic API key |
 | `OPENAI_API_KEY` | analyzer | unset | OpenAI API key |
 
