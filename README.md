@@ -83,7 +83,8 @@ so a compromised collector cannot authenticate as an operator.
   `?raw=1` when exact plain text is preferable.
 - History is a timeline instead of a timestamp table. It merges the current
   report with its matching latest snapshot, summarizes changed sections and
-  added/removed lines, and paginates archived captures in groups of 25.
+  added/removed lines, links each capture to its saved analysis when available,
+  and paginates archived captures in groups of 25.
 - Analysis state is `pending`, `current`, `stale`, or `failed`. An existing
   analysis becomes stale when a newer report is stored. The dashboard opens
   existing analyses and only starts pending ones; refresh actions stay on the
@@ -118,8 +119,9 @@ curl -H "X-Auth-Token: $HARDEN_UI_TOKEN" -X POST http://SERVER:8000/analyze/web0
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/report` | Agent submits a report with `X-Auth-Token`; the latest report is stored at `<host>.json` and every submission is also archived under `history/<host>/` |
-| `POST` | `/analyze/<host>` | Runs the LLM diagnosis and saves text output |
+| `POST` | `/analyze/<host>` | Runs the LLM diagnosis and saves it with the current report and its matching history capture |
 | `GET` | `/analysis/<host>` | Shows the saved diagnosis as HTML or text and flags it when a newer report makes it stale |
+| `GET` | `/analysis/<host>?stamp=<timestamp>` | Shows the analysis saved for one historical report |
 | `GET` | `/analysis/<host>?raw=1` | Returns the saved diagnosis as raw text |
 | `GET` | `/analysis/<host>?format=md` | Downloads the saved diagnosis as a `.md` file |
 | `GET` | `/analysis/<host>?format=pdf` | Downloads the saved diagnosis as a generated PDF |

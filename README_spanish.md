@@ -65,8 +65,8 @@ comprometido no tenga acceso de operador.
   `GET /report/<host>?raw=1` conserva la salida exacta en texto plano.
 - `GET /history/<host>` muestra un timeline. Fusiona el reporte actual con su
   snapshot equivalente para evitar duplicados, resume secciones modificadas y
-  lineas agregadas/eliminadas, y pagina los snapshots de 25 en 25 con
-  `?page=N`.
+  lineas agregadas/eliminadas, enlaza cada captura con su analisis guardado
+  cuando existe, y pagina los snapshots de 25 en 25 con `?page=N`.
 - Un analisis puede estar pendiente, vigente, obsoleto (`stale`) o fallido. Si
   llega un reporte mas nuevo, el analisis guardado se marca obsoleto. El
   dashboard abre los analisis existentes y solo inicia los pendientes; la
@@ -80,8 +80,9 @@ comprometido no tenga acceso de operador.
 | Metodo | Ruta | Uso |
 |--------|------|-----|
 | `POST` | `/report` | Recibe un reporte autenticado, actualiza el ultimo y archiva el envio |
-| `POST` | `/analyze/<host>` | Ejecuta y guarda el diagnostico LLM |
+| `POST` | `/analyze/<host>` | Ejecuta el diagnostico LLM y lo guarda con el reporte actual y su captura historica correspondiente |
 | `GET` | `/analysis/<host>` | Muestra el analisis guardado y avisa si esta obsoleto |
+| `GET` | `/analysis/<host>?stamp=<timestamp>` | Muestra el analisis guardado para un reporte historico |
 | `GET` | `/analysis/<host>?raw=1` | Devuelve el analisis como texto plano |
 | `GET` | `/analysis/<host>?format=md` | Descarga el analisis como Markdown |
 | `GET` | `/analysis/<host>?format=pdf` | Descarga el analisis como PDF |

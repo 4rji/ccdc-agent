@@ -438,6 +438,26 @@ func (a *app) historyReportPath(host, stamp string) string {
 	return filepath.Join(a.historyDir(host), safe(stamp)+".json")
 }
 
+func (a *app) historyAnalysisPath(host, stamp string) string {
+	return filepath.Join(a.historyDir(host), safe(stamp)+".analysis.txt")
+}
+
+func historyStampFromPayload(payload map[string]any) (string, bool) {
+	receivedAt, ok := parseReceived(stringValue(payload["_received"], ""))
+	if !ok {
+		return "", false
+	}
+	return receivedAt.Format(historyStampLayout), true
+}
+
+func historyStampFromReport(data []byte) (string, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil || payload == nil {
+		return "", false
+	}
+	return historyStampFromPayload(payload)
+}
+
 func wantsHTML(r *http.Request) bool {
 	for _, part := range strings.Split(strings.ToLower(r.Header.Get("Accept")), ",") {
 		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
@@ -638,6 +658,11 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not archive report", http.StatusInternalServerError)
 		return
 	}
+	if err := a.archiveCurrentAnalysis(host); err != nil {
+		log.Printf("could not archive current analysis host=%s err=%v", host, err)
+		http.Error(w, "could not archive current analysis", http.StatusInternalServerError)
+		return
+	}
 	if err := writeFileAtomic(historyPath, data, 0600); err != nil {
 		log.Printf("could not write history report host=%s err=%v", host, err)
 		http.Error(w, "could not archive report", http.StatusInternalServerError)
@@ -663,6 +688,60 @@ func (a *app) receiveReport(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"host":   payload["hostname"],
 	})
+}
+
+func (a *app) archiveCurrentAnalysis(host string) error {
+	reportInfo, err := os.Stat(a.reportPath(host))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	analysisInfo, err := os.Stat(a.analysisPath(host))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if analysisInfo.ModTime().Before(reportInfo.ModTime()) {
+		return nil
+	}
+
+	reportData, err := readStoredReport(a.reportPath(host))
+	if err != nil {
+		return err
+	}
+	stamp, ok := historyStampFromReport(reportData)
+	if !ok {
+		return nil
+	}
+	historyReport, err := readStoredReport(a.historyReportPath(host, stamp))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sha256.Sum256(historyReport) != sha256.Sum256(reportData) {
+		return nil
+	}
+	historyAnalysisPath := a.historyAnalysisPath(host, stamp)
+	if fileExists(historyAnalysisPath) {
+		return nil
+	}
+	analysisData, err := os.ReadFile(a.analysisPath(host))
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(historyAnalysisPath, analysisData, 0600)
+}
+
+func (a *app) currentAnalysisMatchesReport(host string) bool {
+	reportInfo, reportErr := os.Stat(a.reportPath(host))
+	analysisInfo, analysisErr := os.Stat(a.analysisPath(host))
+	return reportErr == nil && analysisErr == nil && !analysisInfo.ModTime().Before(reportInfo.ModTime())
 }
 
 func decodeChecks(raw any) map[string]string {
@@ -778,7 +857,19 @@ func (a *app) analyze(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "report changed during analysis; run it again", http.StatusConflict)
 		return
 	}
-	if err := writeFileAtomic(a.analysisPath(host), []byte(result), 0600); err != nil {
+	analysisData := []byte(result)
+	if stamp, ok := historyStampFromReport(reportData); ok {
+		historyReport, historyErr := readStoredReport(a.historyReportPath(host, stamp))
+		if historyErr == nil && sha256.Sum256(historyReport) == sha256.Sum256(reportData) {
+			if err := writeFileAtomic(a.historyAnalysisPath(host, stamp), analysisData, 0600); err != nil {
+				a.storageMu.Unlock()
+				log.Printf("could not write history analysis host=%s stamp=%s err=%v", host, stamp, err)
+				http.Error(w, "could not archive analysis", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if err := writeFileAtomic(a.analysisPath(host), analysisData, 0600); err != nil {
 		a.storageMu.Unlock()
 		log.Printf("could not write analysis host=%s err=%v", host, err)
 		http.Error(w, "could not write analysis", http.StatusInternalServerError)
@@ -818,25 +909,37 @@ func (a *app) getAnalysis(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	stamp := strings.TrimSpace(r.URL.Query().Get("stamp"))
 	path := a.analysisPath(host)
+	if stamp != "" {
+		if _, err := time.Parse(historyStampLayout, stamp); err != nil {
+			http.Error(w, "invalid history timestamp", http.StatusBadRequest)
+			return
+		}
+		path = a.historyAnalysisPath(host, stamp)
+	}
 	text, err := os.ReadFile(path)
 	raw := wantsRaw(r)
 	format := r.URL.Query().Get("format")
 	if err == nil {
-		log.Printf("served analysis host=%s path=%s", host, path)
+		log.Printf("served analysis host=%s stamp=%s path=%s", host, stamp, path)
 		switch format {
 		case "md":
-			writeMarkdownDownload(w, host, string(text))
+			writeMarkdownDownload(w, host, stamp, string(text))
 			return
 		case "pdf":
-			a.writePDFDownload(w, host, string(text))
+			if stamp == "" {
+				a.writePDFDownload(w, host, string(text))
+			} else {
+				a.writeHistoryPDFDownload(w, host, stamp, string(text))
+			}
 			return
 		}
 		if raw || !wantsHTML(r) {
 			writePlain(w, http.StatusOK, string(text))
 			return
 		}
-		writeHTML(w, renderAnalysisPage(a, host, string(text)))
+		writeHTML(w, renderAnalysisPageForStamp(a, host, stamp, string(text)))
 		return
 	}
 	if !os.IsNotExist(err) {
@@ -845,7 +948,20 @@ func (a *app) getAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("analysis not found host=%s path=%s", host, path)
+	log.Printf("analysis not found host=%s stamp=%s path=%s", host, stamp, path)
+	if stamp != "" {
+		message := fmt.Sprintf("no analysis saved for history entry %s", stamp)
+		if raw || !wantsHTML(r) {
+			writePlain(w, http.StatusNotFound, message)
+			return
+		}
+		writeHTMLStatus(w, http.StatusNotFound, renderMessagePage(
+			"Analysis unavailable",
+			"No analysis was saved for this historical report.",
+			fmt.Sprintf("<a class='button' href='/history/%s'>Back to History</a>", html.EscapeString(host)),
+		))
+		return
+	}
 	message := fmt.Sprintf("no analysis yet - POST /analyze/%s", safe(host))
 	if raw || !wantsHTML(r) {
 		writePlain(w, http.StatusNotFound, message)
@@ -854,8 +970,12 @@ func (a *app) getAnalysis(w http.ResponseWriter, r *http.Request) {
 	writeHTMLStatus(w, http.StatusNotFound, renderMissingAnalysisPage(a, host))
 }
 
-func writeMarkdownDownload(w http.ResponseWriter, host, text string) {
-	filename := safe(host) + "-analysis.md"
+func writeMarkdownDownload(w http.ResponseWriter, host, stamp, text string) {
+	filenameBase := safe(host)
+	if stamp != "" {
+		filenameBase += "-" + safe(stamp)
+	}
+	filename := filenameBase + "-analysis.md"
 	body := fmt.Sprintf(
 		"# CCDC Hardening Analysis: %s\n\n_Generated %s_\n\n%s\n",
 		host,
@@ -906,7 +1026,7 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dateLabel := "Current report - " + formatReceived(stringValue(payload["_received"], "?"))
-	writeHTML(w, renderReportPage(host, dateLabel, payload, "/report/"+safe(host)+"?raw=1", true))
+	writeHTML(w, renderReportPage(host, dateLabel, payload, "/report/"+safe(host)+"?raw=1", true, "/analysis/"+safe(host)))
 }
 
 func formatDecodedReport(payload map[string]any) string {
@@ -1023,6 +1143,7 @@ type historyEntry struct {
 	relativeAge     string
 	badge           string
 	href            string
+	analysisHref    string
 	stamp           string
 	collectedAs     string
 	lines           int
@@ -1053,6 +1174,9 @@ func (a *app) buildHistoryEntriesPage(host string, stamps []string, includeCurre
 			date:  formatStamp(stamp),
 			href:  fmt.Sprintf("/history/%s/%s", hostID, stamp),
 			stamp: stamp,
+		}
+		if fileExists(a.historyAnalysisPath(host, stamp)) {
+			view.analysisHref = fmt.Sprintf("/analysis/%s?stamp=%s", hostID, stamp)
 		}
 		if parsed, err := time.Parse(historyStampLayout, stamp); err == nil {
 			view.dateISO = parsed.Format(time.RFC3339Nano)
@@ -1086,6 +1210,9 @@ func (a *app) buildHistoryEntriesPage(host string, stamps []string, includeCurre
 					chronological[index].current = true
 					chronological[index].badge = "Current"
 					chronological[index].href = "/report/" + hostID
+					if a.currentAnalysisMatchesReport(host) {
+						chronological[index].analysisHref = "/analysis/" + hostID
+					}
 					matched = true
 					break
 				}
@@ -1098,6 +1225,9 @@ func (a *app) buildHistoryEntriesPage(host string, stamps []string, includeCurre
 					href:    "/report/" + hostID,
 					stamp:   currentStamp,
 					current: true,
+				}
+				if a.currentAnalysisMatchesReport(host) {
+					view.analysisHref = "/analysis/" + hostID
 				}
 				if parsed, ok := parseReceived(currentReceived); ok {
 					view.relativeAge = relativeTime(a.now().UTC(), parsed)
@@ -1274,14 +1404,15 @@ func renderHistoryPageWithPagination(host string, entries []historyEntry, pagina
 			changeDetail = "The stored file cannot be safely decoded as report JSON."
 		}
 
-		action := "<span class='button disabled' aria-disabled='true'>Unavailable</span>"
+		reportAction := "<span class='button disabled' aria-disabled='true'>Open report</span>"
 		if entry.readable {
-			label := "Open snapshot"
-			if entry.current {
-				label = "Open current report"
-			}
-			action = fmt.Sprintf("<a class='button primary-link' href='%s'>%s</a>", html.EscapeString(entry.href), label)
+			reportAction = fmt.Sprintf("<a class='button primary-link' href='%s'>Open report</a>", html.EscapeString(entry.href))
 		}
+		analysisAction := "<span class='button disabled' aria-disabled='true'>Open analysis</span>"
+		if entry.analysisHref != "" {
+			analysisAction = fmt.Sprintf("<a class='button' href='%s'>Open analysis</a>", html.EscapeString(entry.analysisHref))
+		}
+		actions := fmt.Sprintf("<div class='actions'>%s%s</div>", reportAction, analysisAction)
 		dateMarkup := html.EscapeString(entry.date)
 		if entry.dateISO != "" {
 			dateMarkup = fmt.Sprintf("<time datetime='%s'>%s</time>", html.EscapeString(entry.dateISO), dateMarkup)
@@ -1321,7 +1452,7 @@ func renderHistoryPageWithPagination(host string, entries []historyEntry, pagina
 			html.EscapeString(statusLabel),
 			dateMarkup,
 			html.EscapeString(valueOr(entry.relativeAge, "time unknown")),
-			action,
+			actions,
 			metrics,
 			changeClass,
 			html.EscapeString(changeTitle),
@@ -1343,9 +1474,13 @@ func renderHistoryPageWithPagination(host string, entries []historyEntry, pagina
 		pageNav = fmt.Sprintf("<nav class='pagination' aria-label='History pages'>%s<span>Page %d of %d</span>%s</nav>", newer, pagination.page, pagination.totalPages, older)
 	}
 	currentAction := ""
+	currentAnalysisAction := ""
 	for _, entry := range entries {
 		if entry.current && entry.readable {
 			currentAction = fmt.Sprintf("<a class='button primary-link' href='/report/%s'>Open Current Report</a>", hostID)
+			if entry.analysisHref != "" {
+				currentAnalysisAction = fmt.Sprintf("<a class='button' href='%s'>Current Analysis</a>", html.EscapeString(entry.analysisHref))
+			}
 			break
 		}
 	}
@@ -1369,7 +1504,7 @@ func renderHistoryPageWithPagination(host string, entries []historyEntry, pagina
       </div>
       <div class="actions" aria-label="History links">
         %s
-        <a class="button" href="/analysis/%s">Current Analysis</a>
+        %s
       </div>
     </header>
     <section class="history-overview" aria-label="History overview">
@@ -1387,7 +1522,7 @@ func renderHistoryPageWithPagination(host string, entries []historyEntry, pagina
 		displayHost,
 		displayHost,
 		currentAction,
-		hostID,
+		currentAnalysisAction,
 		len(entries),
 		archiveCount,
 		max(1, pagination.page),
@@ -1446,7 +1581,11 @@ func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dateLabel := "Snapshot - " + formatStamp(stamp)
-		writeHTML(w, renderReportPage(host, dateLabel, payload, fmt.Sprintf("/history/%s/%s?raw=1", safe(host), stamp), false))
+		analysisHref := ""
+		if fileExists(a.historyAnalysisPath(host, stamp)) {
+			analysisHref = fmt.Sprintf("/analysis/%s?stamp=%s", safe(host), stamp)
+		}
+		writeHTML(w, renderReportPage(host, dateLabel, payload, fmt.Sprintf("/history/%s/%s?raw=1", safe(host), stamp), false, analysisHref))
 		return
 	}
 
@@ -2270,9 +2409,13 @@ func renderAnalysisBlocks(lines []string) string {
 }
 
 func loadReportMetadata(a *app, host string) map[string]string {
-	payload, err := readPayload(a.reportPath(host))
+	return loadReportMetadataFromPath(host, a.reportPath(host))
+}
+
+func loadReportMetadataFromPath(host, path string) map[string]string {
+	payload, err := readPayload(path)
 	if err != nil {
-		log.Printf("could not read report metadata host=%s path=%s err=%v", host, a.reportPath(host), err)
+		log.Printf("could not read report metadata host=%s path=%s err=%v", host, path, err)
 		return map[string]string{}
 	}
 	decoded := decodedMap(payload["_decoded"])
@@ -2347,7 +2490,7 @@ func renderMessagePage(title, message, actionsHTML string) string {
 
 // renderReportPage turns decoded checks into a searchable, collapsible report
 // while rawHref preserves the exact plain-text interface used by scripts.
-func renderReportPage(host, dateLabel string, payload map[string]any, rawHref string, current bool) string {
+func renderReportPage(host, dateLabel string, payload map[string]any, rawHref string, current bool, analysisHref string) string {
 	hostID := html.EscapeString(safe(host))
 	displayHost := html.EscapeString(stringValue(payload["hostname"], host))
 	sections := buildReportSections(payload)
@@ -2399,11 +2542,13 @@ func renderReportPage(host, dateLabel string, payload map[string]any, rawHref st
 
 	kind := "Archived snapshot"
 	kindShort := "Snapshot"
-	analysisAction := "<span class='context-note'>Analysis is only attached to the current report.</span>"
+	analysisAction := "<span class='context-note'>No analysis was saved for this report.</span>"
 	if current {
 		kind = "Current report"
 		kindShort = "Current"
-		analysisAction = fmt.Sprintf("<a class='button primary-link' href='/analysis/%s'>Open analysis</a>", hostID)
+	}
+	if analysisHref != "" {
+		analysisAction = fmt.Sprintf("<a class='button primary-link' href='%s'>Open analysis</a>", html.EscapeString(analysisHref))
 	}
 	collectedAs := stringValue(payload["collected_as"], "?")
 	identityClass := "limited"
@@ -2549,7 +2694,33 @@ func renderReportPage(host, dateLabel string, payload map[string]any, rawHref st
 }
 
 func renderAnalysisPage(a *app, host string, text string) string {
-	metadata := loadReportMetadata(a, host)
+	return renderAnalysisPageForStamp(a, host, "", text)
+}
+
+func renderAnalysisPageForStamp(a *app, host, stamp, text string) string {
+	reportPath := a.reportPath(host)
+	reportHref := "/report/" + safe(host)
+	analysisHref := "/analysis/" + safe(host)
+	backHref := "/"
+	backLabel := "Back to dashboard"
+	eyebrow := "LLM Diagnosis"
+	runAction := a.analysisForm(host, "Run Again", "")
+	querySeparator := "?"
+	archived := stamp != ""
+	if archived {
+		reportPath = a.historyReportPath(host, stamp)
+		reportHref = fmt.Sprintf("/history/%s/%s", safe(host), stamp)
+		analysisHref += "?stamp=" + url.QueryEscape(stamp)
+		backHref = "/history/" + safe(host)
+		backLabel = "Back to history"
+		eyebrow = "Archived LLM Diagnosis"
+		runAction = "<span class='context-note'>Historical analyses are read-only.</span>"
+		querySeparator = "&"
+	}
+	rawHref := analysisHref + querySeparator + "raw=1"
+	pdfHref := analysisHref + querySeparator + "format=pdf"
+	markdownHref := analysisHref + querySeparator + "format=md"
+	metadata := loadReportMetadataFromPath(host, reportPath)
 	displayHost := html.EscapeString(valueOr(metadata["host"], host))
 	hostID := html.EscapeString(safe(host))
 	score := extractScore(text)
@@ -2601,20 +2772,24 @@ func renderAnalysisPage(a *app, host string, text string) string {
 	if model == "" {
 		model = "not configured"
 	}
-	reportModTime := time.Time{}
-	if info, err := os.Stat(a.reportPath(host)); err == nil {
-		reportModTime = info.ModTime()
-	}
-	analysisState := a.analysisState(host, reportModTime)
-	analysisStateLabel := map[string]string{
-		"ready":   "Current",
-		"stale":   "Stale",
-		"failed":  "Failed",
-		"pending": "Pending",
-	}[analysisState]
+	analysisState := "archived"
+	analysisStateLabel := "Archived"
 	statusBanner := ""
-	if analysisState == "stale" {
-		statusBanner = fmt.Sprintf("<section class='status-banner stale'><div><strong>This analysis is out of date</strong><p>A newer host report arrived after these findings were generated.</p></div>%s</section>", a.analysisForm(host, "Refresh analysis", ""))
+	if !archived {
+		reportModTime := time.Time{}
+		if info, err := os.Stat(reportPath); err == nil {
+			reportModTime = info.ModTime()
+		}
+		analysisState = a.analysisState(host, reportModTime)
+		analysisStateLabel = map[string]string{
+			"ready":   "Current",
+			"stale":   "Stale",
+			"failed":  "Failed",
+			"pending": "Pending",
+		}[analysisState]
+		if analysisState == "stale" {
+			statusBanner = fmt.Sprintf("<section class='status-banner stale'><div><strong>This analysis is out of date</strong><p>A newer host report arrived after these findings were generated.</p></div>%s</section>", a.analysisForm(host, "Refresh analysis", ""))
+		}
 	}
 	sideValues := [][2]string{
 		{"Analysis", valueOr(analysisStateLabel, "Unknown")},
@@ -2642,16 +2817,16 @@ func renderAnalysisPage(a *app, host string, text string) string {
   <main class="shell">
     <header class="topbar analysis-top">
       <div>
-        <a class="back-link" href="/">Back to dashboard</a>
-        <p class="eyebrow">LLM Diagnosis</p>
+        <a class="back-link" href="%s">%s</a>
+        <p class="eyebrow">%s</p>
         <h1>Analysis: %s</h1>
       </div>
       <div class="runtime" aria-label="Analysis links">
-        <a class="button" href="/report/%s">Report</a>
+        <a class="button" href="%s">Report</a>
         <a class="button" href="/history/%s">History</a>
-        <a class="button" href="/analysis/%s?raw=1">Raw Text</a>
-        <a class="button" href="/analysis/%s?format=pdf">Download PDF</a>
-        <a class="button" href="/analysis/%s?format=md">Download .md</a>
+        <a class="button" href="%s">Raw Text</a>
+        <a class="button" href="%s">Download PDF</a>
+        <a class="button" href="%s">Download .md</a>
       </div>
     </header>
 
@@ -2682,9 +2857,9 @@ func renderAnalysisPage(a *app, host string, text string) string {
 	        <dl>%s</dl>
 	        <div class="side-actions">
 	          %s
-	          <a class="button" href="/analysis/%s?raw=1">View Raw Analysis</a>
-          <a class="button" href="/analysis/%s?format=pdf">Download PDF</a>
-          <a class="button" href="/analysis/%s?format=md">Download .md</a>
+	          <a class="button" href="%s">View Raw Analysis</a>
+          <a class="button" href="%s">Download PDF</a>
+          <a class="button" href="%s">Download .md</a>
         </div>
       </aside>
     </section>
@@ -2693,12 +2868,15 @@ func renderAnalysisPage(a *app, host string, text string) string {
 </html>`,
 		displayHost,
 		dashboardCSS,
+		html.EscapeString(backHref),
+		html.EscapeString(backLabel),
+		html.EscapeString(eyebrow),
 		displayHost,
-		a.analysisForm(host, "Run Again", ""),
+		html.EscapeString(reportHref),
 		hostID,
-		hostID,
-		hostID,
-		hostID,
+		html.EscapeString(rawHref),
+		html.EscapeString(pdfHref),
+		html.EscapeString(markdownHref),
 		statusBanner,
 		html.EscapeString(scoreClass),
 		html.EscapeString(scoreValue),
@@ -2708,10 +2886,10 @@ func renderAnalysisPage(a *app, host string, text string) string {
 		cards.String(),
 		displayHost,
 		sideRows.String(),
-		hostID,
-		hostID,
-		hostID,
-		hostID,
+		runAction,
+		html.EscapeString(rawHref),
+		html.EscapeString(pdfHref),
+		html.EscapeString(markdownHref),
 	)
 }
 

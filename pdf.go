@@ -86,15 +86,9 @@ type analysisPDFLayout struct {
 }
 
 func (a *app) writePDFDownload(w http.ResponseWriter, host, text string) {
-	metadata := loadReportMetadata(a, host)
-	displayHost := valueOr(metadata["host"], host)
 	reportModTime := time.Time{}
 	if info, err := os.Stat(a.reportPath(host)); err == nil {
 		reportModTime = info.ModTime()
-	}
-	analysisTime := time.Time{}
-	if info, err := os.Stat(a.analysisPath(host)); err == nil {
-		analysisTime = info.ModTime().UTC()
 	}
 	status := map[string]string{
 		"ready":   "Current",
@@ -102,6 +96,28 @@ func (a *app) writePDFDownload(w http.ResponseWriter, host, text string) {
 		"failed":  "Failed",
 		"pending": "Pending",
 	}[a.analysisState(host, reportModTime)]
+	a.writePDFDownloadForReport(w, host, "", text, a.reportPath(host), a.analysisPath(host), valueOr(status, "Unknown"))
+}
+
+func (a *app) writeHistoryPDFDownload(w http.ResponseWriter, host, stamp, text string) {
+	a.writePDFDownloadForReport(
+		w,
+		host,
+		stamp,
+		text,
+		a.historyReportPath(host, stamp),
+		a.historyAnalysisPath(host, stamp),
+		"Archived",
+	)
+}
+
+func (a *app) writePDFDownloadForReport(w http.ResponseWriter, host, stamp, text, reportPath, analysisPath, status string) {
+	metadata := loadReportMetadataFromPath(host, reportPath)
+	displayHost := valueOr(metadata["host"], host)
+	analysisTime := time.Time{}
+	if info, err := os.Stat(analysisPath); err == nil {
+		analysisTime = info.ModTime().UTC()
+	}
 	provider := selectProvider()
 	data := analysisPDFData{
 		title:       "CCDC Hardening Analysis: " + displayHost,
@@ -116,7 +132,11 @@ func (a *app) writePDFDownload(w http.ResponseWriter, host, text string) {
 		collectedAt: valueOr(metadata["timestamp"], "Unknown"),
 	}
 	pdfBytes := generateAnalysisPDF(data)
-	filename := safe(host) + "-analysis.pdf"
+	filenameBase := safe(host)
+	if stamp != "" {
+		filenameBase += "-" + safe(stamp)
+	}
+	filename := filenameBase + "-analysis.pdf"
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(pdfBytes)))

@@ -276,6 +276,41 @@ func TestConcurrentReportsKeepUniqueHistoryAndLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestReceiveReportArchivesExistingCurrentAnalysis(t *testing.T) {
+	a := testApp(t)
+	oldStamp := "20260717T205948.482136Z"
+	oldPayload := map[string]any{
+		"hostname":  "web01",
+		"_received": "2026-07-17T20:59:48.482136Z",
+		"_decoded":  map[string]any{"system": "old kernel"},
+	}
+	writeReportFile(t, a, "web01", oldPayload)
+	writeHistoryFile(t, a, "web01", oldStamp, oldPayload)
+	if err := os.WriteFile(a.analysisPath("web01"), []byte("analysis for old kernel"), 0600); err != nil {
+		t.Fatalf("write current analysis: %v", err)
+	}
+	a.now = func() time.Time {
+		return time.Date(2026, time.July, 17, 21, 10, 0, 0, time.UTC)
+	}
+
+	body := fmt.Sprintf(`{"hostname":"web01","checks":{"system":"%s"}}`, base64.StdEncoding.EncodeToString([]byte("new kernel")))
+	req := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(body))
+	req.Header.Set("X-Auth-Token", defaultSharedSecret)
+	rr := httptest.NewRecorder()
+	a.receiveReport(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+
+	archived, err := os.ReadFile(a.historyAnalysisPath("web01", oldStamp))
+	if err != nil {
+		t.Fatalf("read archived analysis: %v", err)
+	}
+	if string(archived) != "analysis for old kernel" {
+		t.Fatalf("archived analysis = %q", archived)
+	}
+}
+
 func TestRoutesExposeHealthAndSecurityHeaders(t *testing.T) {
 	a := testApp(t)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -594,6 +629,37 @@ func TestDashboardOnlyRunsPendingAnalysis(t *testing.T) {
 	}
 }
 
+func TestAnalyzeStoresAnalysisWithMatchingHistoryReport(t *testing.T) {
+	a := testApp(t)
+	stamp := "20260718T120000.000000Z"
+	payload := map[string]any{
+		"hostname":  "web01",
+		"_received": "2026-07-18T12:00:00.000000Z",
+		"_decoded":  map[string]any{"system": "kernel"},
+	}
+	writeReportFile(t, a, "web01", payload)
+	writeHistoryFile(t, a, "web01", stamp, payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/analyze/web01", nil)
+	rr := httptest.NewRecorder()
+	a.analyze(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+
+	current, err := os.ReadFile(a.analysisPath("web01"))
+	if err != nil {
+		t.Fatalf("read current analysis: %v", err)
+	}
+	archived, err := os.ReadFile(a.historyAnalysisPath("web01", stamp))
+	if err != nil {
+		t.Fatalf("read history analysis: %v", err)
+	}
+	if string(archived) != string(current) {
+		t.Fatal("history analysis differs from the current analysis")
+	}
+}
+
 func TestAnalyzeDiscardsResultWhenReportChanges(t *testing.T) {
 	a := testApp(t)
 	writeReportFile(t, a, "web01", map[string]any{
@@ -689,6 +755,17 @@ func writeHistoryFile(t *testing.T, a *app, host, stamp string, payload map[stri
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("write history: %v", err)
+	}
+}
+
+func writeHistoryAnalysis(t *testing.T, a *app, host, stamp, analysis string) {
+	t.Helper()
+	path := a.historyAnalysisPath(host, stamp)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir history analysis: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(analysis), 0600); err != nil {
+		t.Fatalf("write history analysis: %v", err)
 	}
 }
 
@@ -879,6 +956,10 @@ func TestHistorySummaryPage(t *testing.T) {
 	writeReportFile(t, a, "web01", currentPayload)
 	writeHistoryFile(t, a, "web01", oldStamp, oldPayload)
 	writeHistoryFile(t, a, "web01", currentStamp, currentPayload)
+	writeHistoryAnalysis(t, a, "web01", oldStamp, "old analysis")
+	if err := os.WriteFile(a.analysisPath("web01"), []byte("current analysis"), 0600); err != nil {
+		t.Fatalf("write current analysis: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/history/web01", nil)
 	req.Header.Set("Accept", "text/html")
@@ -904,6 +985,20 @@ func TestHistorySummaryPage(t *testing.T) {
 	if !strings.Contains(body, "/history/web01/"+oldStamp) {
 		t.Fatal("timeline missing older snapshot link")
 	}
+	if strings.Contains(body, "Open snapshot") || strings.Contains(body, "Open current report") {
+		t.Fatal("timeline still uses snapshot-specific action labels")
+	}
+	if got := strings.Count(body, ">Open report</a>"); got != 2 {
+		t.Fatalf("timeline has %d open-report actions, want 2", got)
+	}
+	for _, analysisHref := range []string{
+		"/analysis/web01",
+		"/analysis/web01?stamp=" + oldStamp,
+	} {
+		if !strings.Contains(body, analysisHref) {
+			t.Fatalf("timeline missing analysis link %q", analysisHref)
+		}
+	}
 	for _, metric := range []string{
 		"3/11 sections",
 		"9 lines",
@@ -925,6 +1020,90 @@ func TestHistorySummaryPage(t *testing.T) {
 		if !strings.Contains(body, change) {
 			t.Fatalf("timeline missing change summary %q", change)
 		}
+	}
+}
+
+func TestHistoricalReportAndAnalysisLinkToEachOther(t *testing.T) {
+	a := testApp(t)
+	stamp := "20260717T205948.482136Z"
+	writeHistoryFile(t, a, "web01", stamp, map[string]any{
+		"hostname":     "web01",
+		"timestamp":    "2026-07-17T20:58:00Z",
+		"collected_as": "root",
+		"_received":    "2026-07-17T20:59:48.482136Z",
+		"_decoded":     map[string]any{"system": "old kernel"},
+	})
+	writeHistoryAnalysis(t, a, "web01", stamp, "1. HARDENING SCORE: 71/100\nOld finding")
+
+	req := httptest.NewRequest(http.MethodGet, "/history/web01/"+stamp, nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	a.getHistory(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("history report status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "/analysis/web01?stamp="+stamp) || !strings.Contains(rr.Body.String(), "Open analysis") {
+		t.Fatal("historical report is missing its analysis link")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/analysis/web01?stamp="+stamp, nil)
+	req.Header.Set("Accept", "text/html")
+	rr = httptest.NewRecorder()
+	a.getAnalysis(rr, req)
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK {
+		t.Fatalf("history analysis status = %d body=%s", rr.Code, body)
+	}
+	for _, want := range []string{
+		"Archived LLM Diagnosis",
+		"Historical analyses are read-only.",
+		"/history/web01/" + stamp,
+		"Old finding",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("historical analysis page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "Run Again") || strings.Contains(body, "Refresh analysis") {
+		t.Fatal("historical analysis page offers a rerun action")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/analysis/web01?stamp="+stamp+"&raw=1", nil)
+	rr = httptest.NewRecorder()
+	a.getAnalysis(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "1. HARDENING SCORE: 71/100\nOld finding" {
+		t.Fatalf("raw history analysis = %d %q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHistoryDoesNotAttachStaleAnalysisToCurrentReport(t *testing.T) {
+	a := testApp(t)
+	stamp := "20260718T120000.000000Z"
+	payload := map[string]any{
+		"hostname":  "web01",
+		"_received": "2026-07-18T12:00:00.000000Z",
+		"_decoded":  map[string]any{"system": "new kernel"},
+	}
+	writeReportFile(t, a, "web01", payload)
+	writeHistoryFile(t, a, "web01", stamp, payload)
+	if err := os.WriteFile(a.analysisPath("web01"), []byte("analysis for an older report"), 0600); err != nil {
+		t.Fatalf("write stale analysis: %v", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(a.analysisPath("web01"), old, old); err != nil {
+		t.Fatalf("age stale analysis: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/history/web01", nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	a.getHistory(rr, req)
+	body := rr.Body.String()
+	if strings.Contains(body, "href='/analysis/web01'>") {
+		t.Fatal("history attached a stale analysis to the current report")
+	}
+	if !strings.Contains(body, "aria-disabled='true'>Open analysis</span>") {
+		t.Fatal("history does not show that the current report lacks its own analysis")
 	}
 }
 
