@@ -534,6 +534,66 @@ func TestStaleAnalysisRefreshFormCarriesCSRFToken(t *testing.T) {
 	}
 }
 
+func TestDashboardOnlyRunsPendingAnalysis(t *testing.T) {
+	tests := []struct {
+		name            string
+		analysisContent string
+		stale           bool
+		wantRun         bool
+	}{
+		{name: "pending", wantRun: true},
+		{name: "current", analysisContent: "1. HARDENING SCORE: 80/100"},
+		{name: "stale", analysisContent: "1. HARDENING SCORE: 70/100", stale: true},
+		{name: "failed", analysisContent: "[analyzer] provider unavailable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testApp(t)
+			writeReportFile(t, a, "web01", map[string]any{
+				"hostname":     "web01",
+				"timestamp":    "2026-07-18T12:00:00Z",
+				"collected_as": "root",
+				"_received":    "2026-07-18T12:00:00Z",
+				"_decoded":     map[string]any{"system": "kernel"},
+			})
+			if tt.analysisContent != "" {
+				path := a.analysisPath("web01")
+				if err := os.WriteFile(path, []byte(tt.analysisContent), 0600); err != nil {
+					t.Fatalf("write analysis: %v", err)
+				}
+				if tt.stale {
+					old := time.Now().Add(-time.Hour)
+					if err := os.Chtimes(path, old, old); err != nil {
+						t.Fatalf("age analysis: %v", err)
+					}
+				}
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			a.dashboard(rr, req)
+			body := rr.Body.String()
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 body=%s", rr.Code, body)
+			}
+			if strings.Contains(body, "Refresh analysis") || strings.Contains(body, "Retry analysis") {
+				t.Fatalf("dashboard offers rerun action for %s analysis", tt.name)
+			}
+			if tt.wantRun {
+				if !strings.Contains(body, "Run analysis") || !strings.Contains(body, "action='/analyze/web01'") {
+					t.Fatal("pending analysis is missing its run action")
+				}
+				return
+			}
+			if !strings.Contains(body, "Open analysis") || strings.Contains(body, "action='/analyze/web01'") {
+				t.Fatalf("dashboard does not open the existing %s analysis", tt.name)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDiscardsResultWhenReportChanges(t *testing.T) {
 	a := testApp(t)
 	writeReportFile(t, a, "web01", map[string]any{

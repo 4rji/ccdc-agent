@@ -68,8 +68,9 @@ comprometido no tenga acceso de operador.
   lineas agregadas/eliminadas, y pagina los snapshots de 25 en 25 con
   `?page=N`.
 - Un analisis puede estar pendiente, vigente, obsoleto (`stale`) o fallido. Si
-  llega un reporte mas nuevo, el analisis guardado se marca obsoleto y la
-  interfaz permite actualizarlo.
+  llega un reporte mas nuevo, el analisis guardado se marca obsoleto. El
+  dashboard abre los analisis existentes y solo inicia los pendientes; la
+  actualizacion se hace desde la pagina del analisis.
 - La descarga PDF usa la paleta del dashboard y presenta score, resumen,
   metadatos, hallazgos, tablas, comandos, continuaciones y pies de pagina como
   un informe operativo estructurado.

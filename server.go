@@ -1594,14 +1594,8 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 			freshnessLabel = "Time unknown"
 		}
 		analysisAction := fmt.Sprintf("<a class='button primary-link' href='/analysis/%s'>Open analysis</a>", hostID)
-		if report.analysisStatus != "ready" {
-			label := "Run analysis"
-			if report.analysisStatus == "stale" {
-				label = "Refresh analysis"
-			} else if report.analysisStatus == "failed" {
-				label = "Retry analysis"
-			}
-			analysisAction = a.analysisForm(report.host, label, "data-analysis-form")
+		if report.analysisStatus == "pending" {
+			analysisAction = a.analysisForm(report.host, "Run analysis", "data-analysis-form")
 		}
 		states := []string{report.freshness, report.analysisStatus}
 		if report.analysisStatus != "ready" || report.freshness != "fresh" || report.collectedAs != "root" {

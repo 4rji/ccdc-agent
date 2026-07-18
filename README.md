@@ -85,8 +85,9 @@ so a compromised collector cannot authenticate as an operator.
   report with its matching latest snapshot, summarizes changed sections and
   added/removed lines, and paginates archived captures in groups of 25.
 - Analysis state is `pending`, `current`, `stale`, or `failed`. An existing
-  analysis becomes stale when a newer report is stored, and the dashboard and
-  analysis page offer to refresh it.
+  analysis becomes stale when a newer report is stored. The dashboard opens
+  existing analyses and only starts pending ones; refresh actions stay on the
+  analysis page.
 - PDF downloads use the dashboard palette and render the score, executive
   summary, metadata, findings, tables, commands, continuations, and page footers
   as a structured operational report.
