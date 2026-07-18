@@ -54,6 +54,18 @@ func TestSafe(t *testing.T) {
 	}
 }
 
+func TestModelForUsesGPT5MiniByDefault(t *testing.T) {
+	t.Setenv("HARDEN_MODEL", "")
+	if got := modelFor("openai"); got != "gpt-5-mini" {
+		t.Fatalf("OpenAI default model = %q, want gpt-5-mini", got)
+	}
+
+	t.Setenv("HARDEN_MODEL", "custom-model")
+	if got := modelFor("openai"); got != "custom-model" {
+		t.Fatalf("configured OpenAI model = %q, want custom-model", got)
+	}
+}
+
 func TestDecodeChecks(t *testing.T) {
 	checks := map[string]any{
 		"system": base64.StdEncoding.EncodeToString([]byte("uname -a")),
