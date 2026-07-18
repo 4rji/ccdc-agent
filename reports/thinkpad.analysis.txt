@@ -1,55 +1,37 @@
-1. HARDENING SCORE: 50/100 - Critical gaps in firewall setup and non-standard software configurations suggest potential security weaknesses.
+1. HARDENING SCORE: 40/100 - Significant gaps in SSH configuration, kernel parameters, and permissions.
 
 2. PROBABLE COMPROMISE / RED-TEAM ARTIFACTS
-- Evidence: `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL`
-  Why suspicious: Disables password prompt for all commands, which can be abused.
-  Remediation: `sed -i '/%kali-trusted/d' /etc/sudoers.d/somefile` (replace somefile with the actual sudoers file).
-
-- Evidence: `tcp LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("python",pid=1283,fd=7))`
-  Why suspicious: Python listening on port 8080 without clear purpose.
-  Remediation: `kill -9 1283` and review `/usr/bin/python -m bluehood.daemon` configuration.
+   - Evidence: `/usr/bin/python -m bluehood.daemon`
+   - Why: Unrecognized service running Python, typically absent in a secure production environment.
+   - Remediation: `pkill -9 -f 'python -m bluehood.daemon'`
 
 3. HARDENING GAPS
-- SSH configuration allowing Agent Forwarding and TCP Forwarding:
-  ```
-  AllowAgentForwarding yes
-  AllowTcpForwarding yes
-  ```
-  Remediation: 
-  ```
-  echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config
-  echo "AllowTcpForwarding no" >> /etc/ssh/sshd_config
-  systemctl restart sshd
-  ```
-  
-- Firewall allows all INPUT:
-  ```
-  -P INPUT ACCEPT
-  ```
-  Remediation: 
-  ```
-  iptables -P INPUT DROP
-  systemctl restart iptables
-  ```
-
-- World-writable files in user directory:
-  ```
-  /home/natasha/digi-techsupport/dist/win-unpacked/*.dll
-  ```
-  Remediation:
-  ```
-  chmod -R o-w /home/natasha/digi-techsupport/dist/win-unpacked/
-  ```
-
+   - SSH (PasswordAuthentication enabled)
+     - Evidence: `passwordauthentication yes`
+     - Remediation: `sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl restart sshd`
+   - Firewall (default accept policy)
+     - Evidence: `-P INPUT ACCEPT`
+     - Remediation: `iptables -P INPUT DROP && iptables -P FORWARD DROP && iptables -P OUTPUT ACCEPT`
+   - Empty-password accounts
+     - Evidence: `[WARN] PAM permite password vacio (nullok): /etc/pam.d/common-auth`
+     - Remediation: Remove `nullok` from `/etc/pam.d/common-auth`
+   - Dangerous SUID binaries
+     - Evidence: `Hay binarios con capabilities peligrosas`
+     - Remediation: `chmod -s /usr/bin/{trip,mtr-packet}`
+   - Kernel settings (ip_forward enabled)
+     - Evidence: `net.ipv4.ip_forward = 1`
+     - Remediation: `sysctl -w net.ipv4.ip_forward=0 && echo "net.ipv4.ip_forward=0" >> /etc/sysctl.conf`
+   
 4. SUSPICIOUS PROCESSES / SERVICES / TASKS
-| Item                          | Evidence                                                             | Action                        |
-|-------------------------------|----------------------------------------------------------------------|-------------------------------|
-| Python on Port 8080           | `tcp LISTEN 0 128 0.0.0.0:8080 ...users:(("python",pid=1283...`      | Investigate, then kill if needed: `kill -9 1283` |
-| %kali-trusted Sudo Permission | `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL`                        | Remove line                   |
-
+   | Item                 | Evidence                                   | Action                                       |
+   |----------------------|--------------------------------------------|----------------------------------------------|
+   | bluehood.daemon      | /usr/bin/python -m bluehood.daemon         | pkill -9 -f 'python -m bluehood.daemon'      |
+   | markdown-converter   | /opt/markdown-converter/app.py             | pkill -9 -f '/opt/markdown-converter/app.py' |
+   
 5. DO-NOW CHECKLIST
-- Block all incoming traffic by default on firewall with `iptables -P INPUT DROP`.
-- Remove `%kali-trusted   ALL=(ALL:ALL) NOPASSWD: ALL` entry from the sudoers file.
-- Disable unnecessary TCP forwarding and agent forwarding in SSH configuration.
-- Kill suspicious python process listening on port 8080.
-- Restrict world-writable permissions in `/home/natasha/digi-techsupport/dist/win-unpacked/`.
+   1. Disable Python daemon: `pkill -9 -f 'python -m bluehood.daemon'`
+   2. Restrict PasswordAuthentication for SSH: `sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl restart sshd`
+   3. Apply firewall policies: `iptables -P INPUT DROP && iptables -P FORWARD DROP && iptables -P OUTPUT ACCEPT`
+   4. Remove nullok from PAM configuration: Edit `/etc/pam.d/common-auth` and remove `nullok`
+   5. Set `net.ipv4.ip_forward` to 0: `sysctl -w net.ipv4.ip_forward=0 && echo "net.ipv4.ip_forward=0" >> /etc/sysctl.conf`
+   6. Remove dangerous file capabilities: `chmod -s /usr/bin/{trip,mtr-packet}`
