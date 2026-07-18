@@ -96,7 +96,7 @@ var analysisSectionLabels = map[string]string{
 
 var defaultModels = map[string]string{
 	"anthropic": "claude-sonnet-4-5",
-	"openai":    "gpt-4o",
+	"openai":    "gpt-5-mini",
 }
 
 var (

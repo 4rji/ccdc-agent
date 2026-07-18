@@ -40,7 +40,7 @@ Para usar OpenAI en vez de Anthropic:
 ```bash
 export HARDEN_LLM_PROVIDER="openai"
 export OPENAI_API_KEY="sk-..."
-export HARDEN_MODEL="gpt-4o"             # opcional; default gpt-4o
+export HARDEN_MODEL="gpt-5-mini"         # opcional; default gpt-5-mini
 go run .
 ```
 

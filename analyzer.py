@@ -5,7 +5,7 @@ import textwrap
 
 DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-5",
-    "openai": "gpt-4o",
+    "openai": "gpt-5-mini",
 }
 MAX_REPORT_CHARS = int(os.environ.get("HARDEN_MAX_CHARS", "120000"))
 
@@ -112,7 +112,7 @@ def analyze_with_openai(prompt: str) -> str:
     try:
         r = client.chat.completions.create(
             model=model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

@@ -62,7 +62,7 @@ To use OpenAI instead:
 ```bash
 export HARDEN_LLM_PROVIDER="openai"
 export OPENAI_API_KEY="sk-..."
-export HARDEN_MODEL="gpt-4o"             # optional; default is gpt-4o
+export HARDEN_MODEL="gpt-5-mini"         # optional; default is gpt-5-mini
 go run .
 ```
 
@@ -166,7 +166,7 @@ curl -H "X-Auth-Token: $HARDEN_UI_TOKEN" -H 'Accept: text/html' 'http://SERVER:8
 | `HARDEN_ANALYZE_LIMIT` | server | `2` | Maximum simultaneous analyses; excess requests receive HTTP 429 with `Retry-After: 5` |
 | `HARDEN_FIND_TIMEOUT` | agent | `25` | Per-`find` timeout in seconds |
 | `HARDEN_LLM_PROVIDER` | analyzer | `anthropic` unless only `OPENAI_API_KEY` is set | `anthropic` or `openai` |
-| `HARDEN_MODEL` | analyzer | `claude-sonnet-4-5` for Anthropic, `gpt-4o` for OpenAI | LLM model id |
+| `HARDEN_MODEL` | analyzer | `claude-sonnet-4-5` for Anthropic, `gpt-5-mini` for OpenAI | LLM model id |
 | `HARDEN_MAX_CHARS` | analyzer | `120000` | Truncate very large reports before sending to the LLM |
 | `ANTHROPIC_API_KEY` | analyzer | unset | Anthropic API key |
 | `OPENAI_API_KEY` | analyzer | unset | OpenAI API key |
